@@ -137,14 +137,13 @@ final class ListingStore: ObservableObject {
 
     // MARK: - Detail
 
-    /// Resolves the canonical URL (by clicking the card in the hidden feed) and
-    /// then loads the detail page. Both steps are lazy: nothing happens for
-    /// listings the user never opens.
+    /// Resolves the canonical item URL, then loads the detail page. Both steps
+    /// are lazy: nothing happens for listings the user never opens.
     func enrich(_ listing: Listing) async -> Listing {
         var updated = listing
 
         if updated.itemURL == nil {
-            updated.itemURL = await feed.resolveItemURL(cardIndex: listing.cardIndex)
+            updated.itemURL = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
             apply(updated)
         }
         guard let url = updated.itemURL else { return updated }

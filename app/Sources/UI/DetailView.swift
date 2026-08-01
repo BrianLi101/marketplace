@@ -12,6 +12,7 @@ struct DetailView: View {
     @EnvironmentObject private var distances: DistanceResolver
     @State private var current: Listing
     @State private var didFail = false
+    @State private var isEnriching = true
 
     init(listing: Listing, namespace: Namespace.ID) {
         self.listing = listing
@@ -55,6 +56,7 @@ struct DetailView: View {
             withAnimation(.easeOut(duration: 0.25)) {
                 current = enriched
                 didFail = enriched.detail == nil
+                isEnriching = false
             }
         }
     }
@@ -131,7 +133,7 @@ struct DetailView: View {
             Text("Details").font(.headline)
             if let description = detail?.description {
                 Text(description).font(.body)
-            } else if !didFail {
+            } else if isEnriching {
                 ForEach(0..<3, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color(.tertiarySystemFill))
@@ -160,15 +162,31 @@ struct DetailView: View {
         }
     }
 
+    /// §3.2 — a quiet inline row, never a dialog. The preview above it still
+    /// has the price, title, location and photo, which is most of what anyone
+    /// needs to decide.
     private var unavailableNotice: some View {
-        InlineNotice(text: "Full details unavailable.", actionTitle: "Open in Facebook", action: openInFacebook)
+        InlineNotice(
+            text: current.itemURL == nil
+                ? "Couldn't match this listing on Facebook."
+                : "Full details unavailable.",
+            actionTitle: viewOnFacebookTitle,
+            action: openInFacebook
+        )
+    }
+
+    /// The button says what it does. It deep-links to this listing's own
+    /// Marketplace page when the id resolved, and says so when it couldn't —
+    /// rather than promising "Message Seller" and landing somewhere generic.
+    private var viewOnFacebookTitle: String {
+        current.itemURL != nil ? "View on Facebook" : "Search on Facebook"
     }
 
     /// §4 — every route out is a link. When the canonical URL never resolved,
     /// fall back to a Marketplace search for the title rather than a dead end.
     private func openInFacebook() {
         if let url = current.itemURL {
-            Handoff.open(url, kind: "message-seller")
+            Handoff.open(url, kind: "view-listing")
         } else {
             Handoff.openSearch(for: current, citySlug: prefs.locationSlug)
         }
@@ -179,7 +197,7 @@ struct DetailView: View {
         VStack(spacing: 0) {
             Divider()
             Button(action: openInFacebook) {
-                Label("Message Seller on Facebook", systemImage: "arrow.up.forward.app")
+                Label(viewOnFacebookTitle, systemImage: "arrow.up.forward.app")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
             }

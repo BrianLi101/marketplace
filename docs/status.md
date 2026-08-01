@@ -12,7 +12,11 @@ scheme). Throwaway probe harness in `spike/`. Feasibility record in
   see below).
 - **Progressive detail preview** (§3.2) — pushes on the next frame with the
   grid's data, hero image shared via `matchedGeometryEffect`, skeletons for
-  what's still loading. Never blocks on the network.
+  what's still loading. Never blocks on the network. Enrichment then fills in
+  the real description, condition, photo strip, and location + distance
+  (measured 4.7s and 7.6s for two listings).
+- **Deep linking** — "View on Facebook" opens the listing's own
+  `/marketplace/item/{id}` page. Verified against a live listing.
 - **Pagination** — driven by stepping the hidden webview's native scroll view,
   the only method that works (§ below).
 - **Radius pinning, keyword blocklist, hidden listings, recent-search pills,
@@ -31,24 +35,24 @@ scheme). Throwaway probe harness in `spike/`. Feasibility record in
 
 ## Known gaps
 
-### Item URLs don't resolve (affects handoff precision and detail enrichment)
+### Item URLs — solved, via the desktop surface
 
-Listing ids exist nowhere in the mobile DOM. The plan was to tap a card in the
-hidden webview and capture the navigation it triggers — this **worked in the
-standalone spike** (resolved to `/marketplace/item/1901499511237727/`) but does
-**not** fire from inside the app, on either surface, after trying mouse events,
-touch events, `el.click()`, an interactive webview, and full opacity. WebLite
-dispatches taps server-side, so the difference is likely in how the action is
-bound rather than in the events themselves.
+Listing ids exist nowhere in the mobile DOM, and synthetic taps never fired
+WebLite's server-side action from inside the app (mouse events, touch events,
+`el.click()`, interactive webview, full opacity — all no-ops, though the same
+code worked in the standalone spike).
 
-Consequence: "Message Seller" falls back to a Marketplace **search for the
-listing's title** (`Handoff.openSearch`), which lands the user on or beside the
-item, and the detail page keeps the preview without enrichment. Everything
-degrades quietly, per §3.2.
+Resolved by going around it. The **desktop** surface still exposes real
+`a[href*="/marketplace/item/{id}"]` anchors, so `DetailEngine` searches that
+surface for the listing's own title and matches the result back by title prefix
+and price (`ItemMatcher`). Grid titles arrive truncated, so matching is on a
+normalised prefix, and it refuses to guess — a wrong id would open someone
+else's listing, which is worse than no link.
 
-Worth trying next: capture the outbound request WebLite makes when a real
-finger taps a card (compare against the synthetic path), or drive a real
-`UIWindow` hit-test rather than DOM events.
+Cost is one page load per listing the user actually opens, on top of the detail
+page load that §3.2 already requires. Verified end to end: tapping a card
+resolves the id, loads the real description, condition and photos, and "View on
+Facebook" deep-links to that exact item page.
 
 ### Search cards often carry no location — a server-side layout lottery
 

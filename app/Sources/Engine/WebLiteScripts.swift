@@ -168,7 +168,13 @@ enum WebLiteScripts {
         photoURLs: photos.slice(0, 12),
         postedText: listed,
         conditionText: after('Condition'),
-        locationText: (text.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}/) || [])[0] || null,
+        // Detail pages phrase this as "Listed 3 days ago in Berkeley, CA";
+        // keep only the place itself so it can be geocoded and shown plainly.
+        locationText: (function(){
+          var m = text.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}/);
+          if (!m) return null;
+          return m[0].replace(/^.*?\\bin\\s+/i, '').trim();
+        })(),
         loginWall: /you must log in|log into facebook to continue/i.test(text),
         title: document.title
       });
