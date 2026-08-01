@@ -77,15 +77,9 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     func runTests() async {
         webView.customUserAgent = Self.mobileUA
-        let variants = [
-            ("no-radius", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium"),
-            ("with-radius", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium&radius=10"),
-        ]
-        for (name, url) in variants {
-            await load(url)
-            try? await Task.sleep(for: .seconds(16))
-            emit("[\(name)] \(await js(Self.cityCountJS))")
-        }
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium")
+        try? await Task.sleep(for: .seconds(16))
+        emit("mobileIDs: \(await js(Self.mobileIDHuntJS))")
         emit("=== DONE ===")
     }
 
@@ -185,6 +179,110 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         if (/^[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}$/.test(t)) cities.push(t);
       }
       return JSON.stringify({textNodes: all, cityNodes: cities.length, sample: cities.slice(0, 3)});
+    })()
+    """
+
+    /// Titles the mobile feed shows, in order.
+    static let mobileTitlesJS = """
+    (function(){
+      var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
+      var cards = [], cur = null, n;
+      while ((n = walker.nextNode())) {
+        if (n.nodeType === 1 && n.tagName === 'IMG') {
+          var s = n.getAttribute('src') || '';
+          if (s.indexOf('scontent') === -1) continue;
+          cur = []; cards.push(cur);
+        } else if (n.nodeType === 3 && cur) {
+          var p = n.parentElement;
+          if (!p || p.tagName === 'SCRIPT' || p.tagName === 'STYLE') continue;
+          var t = (n.textContent || '').trim();
+          if (t && t.length < 120) cur.push(t);
+        }
+      }
+      return JSON.stringify({count: cards.length, titles: cards.map(function(c){ return c.join('|').slice(0,60); }).slice(0,30)});
+    })()
+    """
+
+    /// Item ids the desktop surface exposes for the same query.
+    static let desktopIDsJS = """
+    (function(){
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'));
+      var seen = {}, out = [];
+      links.forEach(function(a){
+        var m = (a.getAttribute('href')||'').match(/marketplace\\/item\\/(\\d+)/);
+        if (!m || seen[m[1]]) return;
+        seen[m[1]] = 1;
+        out.push(m[1] + ' :: ' + (a.textContent||'').trim().slice(0,55));
+      });
+      return JSON.stringify({count: out.length, items: out});
+    })()
+    """
+
+    /// Are the ids real HTML attributes in the rendered DOM, or only in JS state?
+    static let markupProofJS = """
+    (function(){
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'));
+      if (!links.length) return JSON.stringify({anchors: 0});
+      var a = links[0];
+      var html = a.outerHTML;
+      // Strip the inner content so the anchor's own attributes are visible.
+      var openTag = html.slice(0, html.indexOf('>') + 1);
+      return JSON.stringify({
+        anchors: links.length,
+        tagName: a.tagName,
+        hrefAttribute: a.getAttribute('href').slice(0, 90),
+        openTag: openTag.slice(0, 260),
+        idInStaticMarkup: document.documentElement.outerHTML.indexOf(
+          (a.getAttribute('href').match(/item\\/(\\d+)/) || [])[1] || 'zzz') !== -1,
+        renderedSize: Math.round(a.getBoundingClientRect().width) + 'x' + Math.round(a.getBoundingClientRect().height),
+        ua: navigator.userAgent.slice(0, 45)
+      });
+    })()
+    """
+
+    /// Does the mobile surface carry listing ids anywhere the desktop one does?
+    /// Checks the desktop patterns explicitly: item hrefs, "listing <id>" in an
+    /// accessibility label, and any long numeric run — anywhere in the document.
+    static let mobileIDHuntJS = """
+    (function(){
+      var html = document.documentElement.outerHTML;
+
+      // 1. item hrefs
+      var hrefs = {};
+      (html.match(/marketplace\\/item\\/(\\d+)/g) || []).forEach(function(h){ hrefs[h] = 1; });
+
+      // 2. every aria-label / alt / title on the page, and any that name a listing
+      var labelled = [], listingLabels = [];
+      Array.prototype.slice.call(document.querySelectorAll('[aria-label],[alt],[title]')).forEach(function(el){
+        ['aria-label','alt','title'].forEach(function(k){
+          var v = el.getAttribute(k);
+          if (!v) return;
+          labelled.push(k + '=' + v.slice(0, 70));
+          if (/listing\\s*\\d{8,}/i.test(v)) listingLabels.push(v.slice(0, 90));
+        });
+      });
+
+      // 3. "listing <id>" anywhere in the markup at all
+      var listingPhrases = (html.match(/listing\\s*\\d{8,}/gi) || []).slice(0, 3);
+
+      // 4. long numeric runs vs how many cards are on screen
+      var longNums = {};
+      (html.match(/\\b\\d{13,17}\\b/g) || []).forEach(function(n){ longNums[n] = 1; });
+      var photos = Array.prototype.slice.call(document.querySelectorAll('img')).filter(function(i){
+        return (i.getAttribute('src') || '').indexOf('scontent') !== -1;
+      });
+
+      return JSON.stringify({
+        cardsOnPage: photos.length,
+        itemHrefs: Object.keys(hrefs).length,
+        anchorsTotal: document.querySelectorAll('a').length,
+        labelledElements: labelled.length,
+        labelSamples: labelled.slice(0, 6),
+        listingLabels: listingLabels.length,
+        listingPhrases: listingPhrases,
+        distinctLongNumbers: Object.keys(longNums).length,
+        ua: navigator.userAgent.slice(0, 40)
+      });
     })()
     """
 

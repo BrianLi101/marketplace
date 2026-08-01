@@ -2,7 +2,8 @@
 
 App lives in `app/` (xcodegen; `xcodegen generate` then build the `Marketplace`
 scheme). Throwaway probe harness in `spike/`. Feasibility record in
-`feasibility-2026-07-31.md`.
+`feasibility-2026-07-31.md`. Which Facebook surface to route through, and why —
+including the desktop login modal — is analysed in `surface-strategy.md`.
 
 ## Working, verified on an iPhone 17 Pro simulator
 
