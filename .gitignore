@@ -1,0 +1,4 @@
+.DS_Store
+spike/build/
+spike/MarketplaceSpike.xcodeproj/
+*.xcuserdatad/
