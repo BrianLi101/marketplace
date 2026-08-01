@@ -8,6 +8,8 @@ struct DetailView: View {
     let namespace: Namespace.ID
 
     @EnvironmentObject private var store: ListingStore
+    @EnvironmentObject private var prefs: Preferences
+    @EnvironmentObject private var distances: DistanceResolver
     @State private var current: Listing
     @State private var didFail = false
 
@@ -82,7 +84,16 @@ struct DetailView: View {
                 Text(title).font(.title3)
             }
             if let location = current.locationText ?? detail?.locationText {
-                Text(location).font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    Text(location)
+                    if let distance = distances.distanceText(for: location) {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(distance)
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .task { distances.resolve(place: location) }
             }
         }
     }
@@ -150,9 +161,16 @@ struct DetailView: View {
     }
 
     private var unavailableNotice: some View {
-        InlineNotice(text: "Full details unavailable.", actionTitle: "Open in Facebook") {
-            if let url = current.itemURL { Handoff.open(url, kind: "detail-fallback") }
-            else { Handoff.openMarketplace() }
+        InlineNotice(text: "Full details unavailable.", actionTitle: "Open in Facebook", action: openInFacebook)
+    }
+
+    /// §4 — every route out is a link. When the canonical URL never resolved,
+    /// fall back to a Marketplace search for the title rather than a dead end.
+    private func openInFacebook() {
+        if let url = current.itemURL {
+            Handoff.open(url, kind: "message-seller")
+        } else {
+            Handoff.openSearch(for: current, citySlug: prefs.locationSlug)
         }
     }
 
@@ -160,10 +178,7 @@ struct DetailView: View {
     private var primaryAction: some View {
         VStack(spacing: 0) {
             Divider()
-            Button {
-                if let url = current.itemURL { Handoff.open(url, kind: "message-seller") }
-                else { Handoff.openMarketplace() }
-            } label: {
+            Button(action: openInFacebook) {
                 Label("Message Seller on Facebook", systemImage: "arrow.up.forward.app")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)

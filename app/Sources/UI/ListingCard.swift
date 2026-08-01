@@ -3,6 +3,7 @@ import SwiftUI
 struct ListingCard: View {
     let listing: Listing
     let namespace: Namespace.ID
+    @EnvironmentObject private var distances: DistanceResolver
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -25,14 +26,25 @@ struct ListingCard: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
             }
+            // §3.1 — location and distance are the point of a *local* browser,
+            // so they get their own line whenever the surface provides them.
             if let location = listing.locationText {
-                Text(location)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(location)
+                        .lineLimit(1)
+                    if let distance = distances.distanceText(for: location) {
+                        Text("·").foregroundStyle(.tertiary)
+                        Text(distance)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
         .contentShape(Rectangle())
+        .task { distances.resolve(place: listing.locationText) }
     }
 
     private var thumbnail: some View {

@@ -76,91 +76,17 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     // MARK: - Test sequence
 
     func runTests() async {
-        // Safari on this same simulator DOES render listings and paginates past 15.
-        // Diagnose why the webview didn't: dump DOM shape under the mobile UA.
-        emit("=== DIAGNOSTIC: mobile UA, long wait ===")
         webView.customUserAgent = Self.mobileUA
-        await load("https://www.facebook.com/marketplace/sanfrancisco/search?query=desk")
-        for wait in [5, 10, 20] {
-            try? await Task.sleep(for: .seconds(wait == 5 ? 5 : 5))
-            emit("t+\(wait)s: \(await js(Self.domShapeJS))")
-        }
-        emit("--- where do item IDs live on mobile? ---")
-        emit("ids: \(await js(Self.idHuntJS))")
-        emit("fiber: \(await js(Self.fiberHuntJS))")
-
-        emit("--- tap strategies on category page ---")
-        for (name, script) in Self.tapStrategies {
-            await load("https://www.facebook.com/marketplace/sanfrancisco/furniture/?radius=10")
-            try? await Task.sleep(for: .seconds(14))
-            let fired = await js(script)
-            try? await Task.sleep(for: .seconds(6))
-            let url = await js("window.location.href")
-            emit("[\(name)] fired=\(fired) url=\(url.suffix(70))")
-            if url.contains("/marketplace/item/") { emit("*** \(name) WORKS ***") }
-        }
-
-        emit("--- card structure ---")
-        emit("struct: \(await js(Self.cardStructureJS))")
-
-        emit("--- native scrollView pagination ---")
-        for i in 0..<8 {
-            let sv = webView.scrollView
-            let maxY = max(0, sv.contentSize.height - sv.bounds.height)
-            let target = min(sv.contentOffset.y + sv.bounds.height * 0.9, maxY)
-            sv.setContentOffset(CGPoint(x: 0, y: target), animated: true)
-            try? await Task.sleep(for: .seconds(3))
-            emit("native \(i): offset=\(Int(sv.contentOffset.y))/\(Int(sv.contentSize.height)) => \(await js(Self.paginationProbeJS))")
-        }
-
-        let uaMatrix: [(String, String?)] = [
-            ("desktop-safari", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"),
+        emit("=== LOCATION HUNT on search cards ===")
+        let variants = [
+            ("plain", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"),
+            ("sortDistance", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk&sortBy=distance"),
         ]
-
-        var bestUA: (String, String?)?
-        var bestCount = 0
-        var bestFirstID: String?
-
-        for (name, ua) in uaMatrix {
-            emit("=== UA: \(name) ===")
-            await clearCookies()
-            webView.customUserAgent = ua
-            await load("https://www.facebook.com/marketplace/sanfrancisco/search?query=desk")
-            try? await Task.sleep(for: .seconds(6))
-
-            var lastCount = 0
-            var firstID: String?
-            for round in 0..<5 {
-                let probe = await js(Self.probeAndScrollJS)
-                emit("[\(name)] round \(round): \(probe)")
-                if firstID == nil { firstID = extract(probe, key: "firstId") }
-                lastCount = Int(extract(probe, key: "count") ?? "0") ?? 0
-                try? await Task.sleep(for: .seconds(3))
-            }
-            emit("[\(name)] final count: \(lastCount)")
-            if lastCount > bestCount {
-                bestCount = lastCount
-                bestUA = (name, ua)
-                bestFirstID = firstID
-            }
+        for (name, url) in variants {
+            await load(url)
+            try? await Task.sleep(for: .seconds(18))
+            emit("[\(name)] \(await js(Self.locationHuntJS))")
         }
-
-        if let (name, ua) = bestUA {
-            emit("=== DETAIL via \(name) (count \(bestCount)) ===")
-            webView.customUserAgent = ua
-            if let id = bestFirstID {
-                await load("https://www.facebook.com/marketplace/item/\(id)")
-                try? await Task.sleep(for: .seconds(6))
-                emit("detail: \(await js(Self.detailProbeJS))")
-            }
-            emit("=== FILTERS via \(name) ===")
-            await load("https://www.facebook.com/marketplace/sanfrancisco/search?query=desk&minPrice=100&radius=10")
-            try? await Task.sleep(for: .seconds(6))
-            emit("filtered: \(await js(Self.filterProbeJS))")
-        } else {
-            emit("no UA variant produced any listings")
-        }
-
         emit("=== DONE ===")
     }
 
@@ -459,6 +385,54 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         try { el.dispatchEvent(new MouseEvent(t, opts)); } catch(e) {}
       });
       return JSON.stringify({dispatched:true, urlBefore: before, urlImmediatelyAfter: window.location.href, cardText: el.innerText.slice(0,50).replace(/\\n/g,' ')});
+    })()
+    """
+
+    /// Search cards show price + title but no location, while category cards do
+    /// show it. Is the location hiding in an attribute, an ancestor, or behind a
+    /// distance sort?
+    static let locationHuntJS = """
+    (function(){
+      var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
+      var cands = all.filter(function(el){
+        var i = el.querySelector('img');
+        return i && (i.getAttribute('src')||'').indexOf('fbcdn') !== -1;
+      });
+      var cards = cands.filter(function(el){
+        return !cands.some(function(o){ return o !== el && el.contains(o); });
+      });
+      var el = cards[0];
+      if (!el) return JSON.stringify({error:'no card'});
+
+      var body = document.body.innerText || '';
+      // Any "City, ST" or distance strings anywhere on the page?
+      var cityMatches = (body.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}\\b/g) || []).slice(0, 5);
+      var distMatches = (body.match(/\\d+(\\.\\d+)?\\s*(mi|km|miles)\\b/gi) || []).slice(0, 5);
+
+      // Everything the card itself carries, including a11y labels.
+      var labels = [];
+      Array.prototype.slice.call(el.querySelectorAll('[aria-label],[alt],[title]')).forEach(function(n){
+        ['aria-label','alt','title'].forEach(function(k){
+          var v = n.getAttribute(k);
+          if (v) labels.push(k + '=' + v.slice(0, 80));
+        });
+      });
+      if (el.getAttribute('aria-label')) labels.push('self aria-label=' + el.getAttribute('aria-label').slice(0,80));
+
+      // Does a wider ancestor include location text the innermost card drops?
+      var chain = [], p = el, d = 0;
+      while (p && d < 4) {
+        chain.push({depth: d, len: (p.innerText||'').length, text: (p.innerText||'').replace(/\\n/g,' | ').slice(0, 120)});
+        p = p.parentElement; d++;
+      }
+      return JSON.stringify({
+        cardCount: cards.length,
+        cardText: (el.innerText||'').replace(/\\n/g,' | ').slice(0,100),
+        labels: labels.slice(0, 6),
+        ancestors: chain,
+        pageCities: cityMatches,
+        pageDistances: distMatches
+      });
     })()
     """
 

@@ -69,8 +69,15 @@ enum WebLiteScripts {
         """
     }
 
-    /// Clicks the card at `index`. The resulting navigation carries the item id;
+    /// Taps the card at `index`. The resulting navigation carries the item id;
     /// the feed's navigation delegate captures and cancels it.
+    ///
+    /// WebLite binds its handlers differently across surfaces — a synthetic
+    /// mouse sequence navigates on search results but does nothing on category
+    /// pages — and the binding is server-driven, so it can change without
+    /// notice. Rather than depend on one gesture, send touch, mouse, and a
+    /// native `click()`: the first one the page listens for wins, and the
+    /// others are inert. Callers must still tolerate no navigation at all.
     static func click(index: Int) -> String {
         """
         (function(){
@@ -79,12 +86,26 @@ enum WebLiteScripts {
           var el = cards[\(index)];
           if (!el) return 'missing';
           var r = el.getBoundingClientRect();
-          var opts = {bubbles:true, cancelable:true, composed:true,
-                      clientX: r.left + r.width/2, clientY: r.top + r.height/2};
+          var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+
+          function touch() {
+            return new Touch({identifier: 1, target: el, clientX: cx, clientY: cy,
+                              pageX: cx, pageY: cy, radiusX: 11, radiusY: 11, force: 1});
+          }
+          try {
+            el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true, cancelable:true, composed:true,
+              touches:[touch()], targetTouches:[touch()], changedTouches:[touch()]}));
+            el.dispatchEvent(new TouchEvent('touchend', {bubbles:true, cancelable:true, composed:true,
+              touches:[], targetTouches:[], changedTouches:[touch()]}));
+          } catch (e) {}
+
+          var mouseOpts = {bubbles:true, cancelable:true, composed:true, clientX:cx, clientY:cy};
           ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(t){
-            try { el.dispatchEvent(new MouseEvent(t, opts)); } catch(e) {}
+            try { el.dispatchEvent(new MouseEvent(t, mouseOpts)); } catch(e) {}
           });
-          return 'clicked';
+
+          try { if (typeof el.click === 'function') el.click(); } catch (e) {}
+          return 'tapped';
         })()
         """
     }

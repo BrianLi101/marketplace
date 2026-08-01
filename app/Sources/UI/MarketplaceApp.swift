@@ -6,6 +6,7 @@ struct MarketplaceApp: App {
     @StateObject private var store = ListingStore()
     @StateObject private var prefs = Preferences.shared
     @StateObject private var location = LocationProvider()
+    @StateObject private var distances = DistanceResolver.shared
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +14,7 @@ struct MarketplaceApp: App {
                 .environmentObject(store)
                 .environmentObject(prefs)
                 .environmentObject(location)
+                .environmentObject(distances)
         }
     }
 }
@@ -45,8 +47,12 @@ struct HiddenWebViewHost: UIViewRepresentable {
     let webView: WKWebView
 
     func makeUIView(context: Context) -> WKWebView {
-        webView.isUserInteractionEnabled = false
-        webView.alpha = 0.005
+        // Fully live — normal opacity, interaction and scrolling all enabled —
+        // because WebLite's rendering and tap handling both degrade when the
+        // view is treated as inert. It stays invisible by sitting behind the
+        // opaque results UI rather than by being dimmed or disabled.
+        webView.isUserInteractionEnabled = true
+        webView.alpha = 1
         return webView
     }
 

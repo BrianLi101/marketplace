@@ -4,6 +4,7 @@ struct ResultsView: View {
     @EnvironmentObject private var store: ListingStore
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var location: LocationProvider
+    @EnvironmentObject private var distances: DistanceResolver
 
     @State private var searchText = ""
     @State private var selected: Listing?
@@ -42,6 +43,12 @@ struct ResultsView: View {
             .navigationDestination(item: $selected) { listing in
                 DetailView(listing: listing, namespace: heroNamespace)
             }
+            // The fix can land long after a search starts; hand it straight to
+            // the distance resolver whenever it does.
+            .onChange(of: location.coordinate?.latitude) {
+                distances.setUserLocation(location.coordinate)
+            }
+            .task { distances.setUserLocation(location.coordinate) }
         }
     }
 
@@ -162,7 +169,12 @@ struct ResultsView: View {
     /// so a slow or refused fix can't stall the results.
     private func makeQuery(_ kind: SearchQuery.Kind) -> SearchQuery {
         if location.coordinate == nil {
-            Task { await location.resolveOnce() }
+            Task {
+                let coordinate = await location.resolveOnce()
+                distances.setUserLocation(coordinate)
+            }
+        } else {
+            distances.setUserLocation(location.coordinate)
         }
         return SearchQuery(
             kind: kind,
