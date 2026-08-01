@@ -1,0 +1,21 @@
+name: Marketplace
+options:
+  bundleIdPrefix: com.brianli101
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  Marketplace:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.brianli101.marketplace
+        PRODUCT_NAME: Marketplace
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Used once to centre your search on your area. Your location never leaves your device."
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGNING_ALLOWED: "NO"
+        SWIFT_VERSION: "5.0"

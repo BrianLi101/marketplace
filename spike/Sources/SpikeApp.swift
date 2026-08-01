@@ -89,12 +89,29 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         emit("ids: \(await js(Self.idHuntJS))")
         emit("fiber: \(await js(Self.fiberHuntJS))")
 
-        emit("--- deep ID hunt ---")
-        emit("deep: \(await js(Self.deepIDHuntJS))")
-        emit("--- synthetic click test ---")
-        emit("click: \(await js(Self.clickTestJS))")
-        try? await Task.sleep(for: .seconds(3))
-        emit("url after click: \(await js("window.location.href"))")
+        emit("--- tap strategies on category page ---")
+        for (name, script) in Self.tapStrategies {
+            await load("https://www.facebook.com/marketplace/sanfrancisco/furniture/?radius=10")
+            try? await Task.sleep(for: .seconds(14))
+            let fired = await js(script)
+            try? await Task.sleep(for: .seconds(6))
+            let url = await js("window.location.href")
+            emit("[\(name)] fired=\(fired) url=\(url.suffix(70))")
+            if url.contains("/marketplace/item/") { emit("*** \(name) WORKS ***") }
+        }
+
+        emit("--- card structure ---")
+        emit("struct: \(await js(Self.cardStructureJS))")
+
+        emit("--- native scrollView pagination ---")
+        for i in 0..<8 {
+            let sv = webView.scrollView
+            let maxY = max(0, sv.contentSize.height - sv.bounds.height)
+            let target = min(sv.contentOffset.y + sv.bounds.height * 0.9, maxY)
+            sv.setContentOffset(CGPoint(x: 0, y: target), animated: true)
+            try? await Task.sleep(for: .seconds(3))
+            emit("native \(i): offset=\(Int(sv.contentOffset.y))/\(Int(sv.contentSize.height)) => \(await js(Self.paginationProbeJS))")
+        }
 
         let uaMatrix: [(String, String?)] = [
             ("desktop-safari", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"),
@@ -200,6 +217,62 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     // MARK: - Injected probes
 
     static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1"
+
+    /// Shared preamble: locate the first listing card the same way the app does.
+    private static let cardPreamble = """
+    var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
+    var cands = all.filter(function(el){
+      var i = el.querySelector('img');
+      return i && (i.getAttribute('src')||'').indexOf('fbcdn') !== -1;
+    });
+    var cards = cands.filter(function(el){
+      return !cands.some(function(o){ return o !== el && el.contains(o); });
+    });
+    var el = cards[0];
+    if (!el) return 'no-card';
+    var r = el.getBoundingClientRect();
+    var cx = r.left + r.width/2, cy = r.top + r.height/2;
+    """
+
+    static let tapStrategies: [(String, String)] = [
+        ("mouse", """
+        (function(){
+          \(cardPreamble)
+          ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(t){
+            el.dispatchEvent(new MouseEvent(t, {bubbles:true, cancelable:true, composed:true, clientX:cx, clientY:cy}));
+          });
+          return 'mouse-sent';
+        })()
+        """),
+        ("touch", """
+        (function(){
+          \(cardPreamble)
+          function T(){ return new Touch({identifier:1, target:el, clientX:cx, clientY:cy, pageX:cx, pageY:cy, radiusX:11, radiusY:11, force:1}); }
+          el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true, cancelable:true, composed:true, touches:[T()], targetTouches:[T()], changedTouches:[T()]}));
+          el.dispatchEvent(new TouchEvent('touchend', {bubbles:true, cancelable:true, composed:true, touches:[], targetTouches:[], changedTouches:[T()]}));
+          return 'touch-sent';
+        })()
+        """),
+        ("touch+mouse", """
+        (function(){
+          \(cardPreamble)
+          function T(){ return new Touch({identifier:1, target:el, clientX:cx, clientY:cy, pageX:cx, pageY:cy, radiusX:11, radiusY:11, force:1}); }
+          el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true, cancelable:true, composed:true, touches:[T()], targetTouches:[T()], changedTouches:[T()]}));
+          el.dispatchEvent(new TouchEvent('touchend', {bubbles:true, cancelable:true, composed:true, touches:[], targetTouches:[], changedTouches:[T()]}));
+          ['mousedown','mouseup','click'].forEach(function(t){
+            el.dispatchEvent(new MouseEvent(t, {bubbles:true, cancelable:true, composed:true, clientX:cx, clientY:cy}));
+          });
+          return 'touch+mouse-sent';
+        })()
+        """),
+        ("nativeClick", """
+        (function(){
+          \(cardPreamble)
+          if (typeof el.click === 'function') { el.click(); return 'native-click'; }
+          return 'no-click-method';
+        })()
+        """)
+    ]
 
     /// What is actually in the DOM? Don't assume the desktop href pattern.
     static let domShapeJS = """
@@ -386,6 +459,86 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         try { el.dispatchEvent(new MouseEvent(t, opts)); } catch(e) {}
       });
       return JSON.stringify({dispatched:true, urlBefore: before, urlImmediatelyAfter: window.location.href, cardText: el.innerText.slice(0,50).replace(/\\n/g,' ')});
+    })()
+    """
+
+    /// Dump the shape of one card + the grid container so selectors can be designed.
+    static let cardStructureJS = """
+    (function(){
+      function priceEl(){
+        var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), n;
+        while ((n = w.nextNode())) { if (/^\\s*\\$\\d/.test(n.textContent)) return n.parentElement; }
+        return null;
+      }
+      var pe = priceEl();
+      if (!pe) return JSON.stringify({error:'no price'});
+      var card = pe, d = 0;
+      while (card && d < 12 && !card.querySelector('img')) { card = card.parentElement; d++; }
+      var grid = card ? card.parentElement : null;
+
+      function summarize(el, depth, maxDepth) {
+        if (!el || depth > maxDepth) return null;
+        var attrs = {};
+        for (var i=0;i<el.attributes.length;i++){
+          var a = el.attributes[i];
+          if (a.name.indexOf('data-') === 0 || a.name === 'role' || a.name === 'href' || a.name === 'src')
+            attrs[a.name] = a.value.length > 60 ? a.value.slice(0,60)+'…' : a.value;
+        }
+        var own = '';
+        for (var j=0;j<el.childNodes.length;j++)
+          if (el.childNodes[j].nodeType === 3) own += el.childNodes[j].textContent;
+        var kids = [];
+        for (var k=0;k<el.children.length && k<6;k++)
+          kids.push(summarize(el.children[k], depth+1, maxDepth));
+        return {tag: el.tagName.toLowerCase(), attrs: attrs, text: own.trim().slice(0,40) || undefined,
+                kids: kids.filter(Boolean).length ? kids : undefined};
+      }
+
+      return JSON.stringify({
+        cardDepthFromPrice: d,
+        siblingCards: grid ? grid.children.length : 0,
+        gridAttrs: grid ? summarize(grid, 0, 0) : null,
+        card: summarize(card, 0, 4),
+        scrollables: Array.prototype.slice.call(document.querySelectorAll('[data-scrollable]')).map(function(e){
+          return {tag: e.tagName.toLowerCase(), sh: e.scrollHeight, ch: e.clientHeight, val: e.getAttribute('data-scrollable')};
+        }).slice(0,4)
+      });
+    })()
+    """
+
+    /// Programmatic scroll doesn't paginate. Does a synthesized touch sequence?
+    static let touchScrollJS = """
+    (function(){
+      var target = document.querySelector('[data-scrollable]') ||
+                   Array.prototype.slice.call(document.querySelectorAll('div'))
+                     .filter(function(d){ return d.scrollHeight > d.clientHeight + 200; })
+                     .sort(function(a,b){ return b.scrollHeight - a.scrollHeight; })[0] ||
+                   document.body;
+      function T(el, x, y, id){
+        return new Touch({identifier: id || 1, target: el, clientX: x, clientY: y,
+                          pageX: x, pageY: y, screenX: x, screenY: y, radiusX: 11, radiusY: 11, force: 1});
+      }
+      function fire(el, type, touches){
+        try {
+          el.dispatchEvent(new TouchEvent(type, {bubbles:true, cancelable:true, composed:true,
+            touches: touches, targetTouches: touches, changedTouches: touches}));
+          return true;
+        } catch(e) { return 'err:' + e.message; }
+      }
+      var h = window.innerHeight || 800, x = Math.round((window.innerWidth||400) / 2);
+      var startY = Math.round(h * 0.8), endY = Math.round(h * 0.2);
+      var r1 = fire(target, 'touchstart', [T(target, x, startY)]);
+      var steps = 8, ok = true;
+      for (var i = 1; i <= steps; i++) {
+        var y = Math.round(startY + (endY - startY) * (i / steps));
+        if (fire(target, 'touchmove', [T(target, x, y)]) !== true) ok = false;
+      }
+      var r3 = fire(target, 'touchend', []);
+      // also nudge native scroll in case the page relies on it after gesture
+      window.scrollTo(0, document.body.scrollHeight);
+      if (target.scrollTop !== undefined) target.scrollTop = target.scrollHeight;
+      return JSON.stringify({target: target.tagName + (target.getAttribute('data-scrollable') ? '[scrollable]' : ''),
+                             start: r1, moves: ok, end: r3});
     })()
     """
 

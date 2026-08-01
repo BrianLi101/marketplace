@@ -2,3 +2,5 @@
 spike/build/
 spike/MarketplaceSpike.xcodeproj/
 *.xcuserdatad/
+app/build/
+app/Marketplace.xcodeproj/
