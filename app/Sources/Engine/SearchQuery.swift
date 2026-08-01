@@ -42,12 +42,12 @@ struct SearchQuery: Equatable {
         }
 
         // Facebook's radius parameter is kilometres, despite the UI showing miles.
+        // Verified to filter server-side.
         items.append(URLQueryItem(name: "radius", value: String(radiusKM)))
-        if let coordinate {
-            items.append(URLQueryItem(name: "latitude", value: String(format: "%.4f", coordinate.latitude)))
-            items.append(URLQueryItem(name: "longitude", value: String(format: "%.4f", coordinate.longitude)))
-        }
-        components.queryItems = items
+
+        // No latitude/longitude: the city slug already anchors the search, and
+        // the user's coordinate is only needed locally, to compute distances.
+        components.queryItems = items.isEmpty ? nil : items
         return components.url!
     }
 

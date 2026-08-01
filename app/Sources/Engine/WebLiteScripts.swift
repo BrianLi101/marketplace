@@ -19,23 +19,50 @@ enum WebLiteScripts {
     /// category pages don't — so the only reliable signal is structural: an
     /// actionable container holding a listing photo, innermost first.
     private static let cardFinder = """
-    function __mpCards() {
-      var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
-      var candidates = all.filter(function(el){
-        var img = el.querySelector('img');
-        return img && (img.getAttribute('src') || '').indexOf('fbcdn') !== -1;
-      });
-      return candidates.filter(function(el){
-        return !candidates.some(function(other){ return other !== el && el.contains(other); });
-      });
+    // Listing photos are served from scontent-*.xx.fbcdn.net. Facebook's own
+    // chrome (the wordmark, icons) is on static.xx.fbcdn.net/rsrc.php, so
+    // matching "fbcdn" alone picks up the header logo and lets a card grow
+    // outward until it swallows its neighbour.
+    function __mpIsListingPhoto(img) {
+      var src = img.getAttribute('src') || '';
+      return src.indexOf('scontent') !== -1 && src.indexOf('rsrc.php') === -1;
     }
-    function __mpTexts(el) {
-      var out = [], walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), n;
-      while ((n = walker.nextNode())) {
-        var t = (n.textContent || '').trim();
-        if (t) out.push(t);
+    function __mpListingImages(el) {
+      var imgs = el.querySelectorAll('img'), n = 0;
+      for (var i = 0; i < imgs.length; i++) {
+        if (__mpIsListingPhoto(imgs[i])) n++;
       }
-      return out;
+      return n;
+    }
+    // Containment is the wrong model for this markup: a listing's photo and its
+    // text can live in sibling subtrees, so no single ancestor holds one whole
+    // card without also holding the next. Document order is reliable instead —
+    // every text node between one listing photo and the next belongs to that
+    // listing. This walks the page once and buckets accordingly.
+    function __mpCards() {
+      var walker = document.createTreeWalker(
+        document.body,
+        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+        null
+      );
+      var cards = [], current = null, node;
+      while ((node = walker.nextNode())) {
+        if (node.nodeType === 1 && node.tagName === 'IMG' && __mpIsListingPhoto(node)) {
+          var action = node.closest ? node.closest('[data-action-id]') : null;
+          current = {
+            element: action || node.parentElement,
+            imageURL: node.getAttribute('src'),
+            actionId: action ? action.getAttribute('data-action-id') : null,
+            texts: []
+          };
+          cards.push(current);
+        } else if (node.nodeType === 3 && current) {
+          var t = (node.textContent || '').trim();
+          // Guard against the page furniture that trails the final card.
+          if (t && t.length < 120) current.texts.push(t);
+        }
+      }
+      return cards;
     }
     """
 
@@ -47,16 +74,13 @@ enum WebLiteScripts {
           var cards = __mpCards();
           var out = [];
           for (var i = 0; i < cards.length; i++) {
-            var el = cards[i];
-            var img = el.querySelector('img');
-            var texts = __mpTexts(el);
-            var full = (el.innerText || '').trim();
+            var card = cards[i];
             out.push({
               index: i,
-              actionId: el.getAttribute('data-action-id'),
-              imageURL: img ? img.getAttribute('src') : null,
-              texts: texts,
-              fullText: full.slice(0, 300)
+              actionId: card.actionId,
+              imageURL: card.imageURL,
+              texts: card.texts,
+              fullText: card.texts.join(' | ').slice(0, 300)
             });
           }
           return JSON.stringify({
@@ -83,7 +107,7 @@ enum WebLiteScripts {
         (function(){
           \(cardFinder)
           var cards = __mpCards();
-          var el = cards[\(index)];
+          var el = cards[\(index)] ? cards[\(index)].element : null;
           if (!el) return 'missing';
           var r = el.getBoundingClientRect();
           var cx = r.left + r.width / 2, cy = r.top + r.height / 2;

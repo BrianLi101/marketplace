@@ -25,13 +25,18 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            // §2.1 — the engines' webviews must be in the hierarchy or WebKit
-            // throttles script execution and lazy content never arrives. They
-            // sit behind the UI at effectively zero opacity.
-            HiddenWebViewHost(webView: store.feed.webView)
-            HiddenWebViewHost(webView: store.detail.webView)
-
             ResultsView()
+
+            // §2.1 — the engines' webviews must be in the hierarchy or WebKit
+            // throttles them. But *covering* them isn't good enough either:
+            // behind an opaque view, WebKit takes a reduced rendering path and
+            // parts of each card (notably the location line) never render at
+            // all. So they're laid out at full size and pushed outside the
+            // visible area, where WebKit still treats them as live.
+            HiddenWebViewHost(webView: store.feed.webView)
+                .offset(x: 3000)
+            HiddenWebViewHost(webView: store.detail.webView)
+                .offset(x: 3000)
         }
         .fullScreenCover(isPresented: .init(
             get: { !prefs.hasSeenFirstRun },

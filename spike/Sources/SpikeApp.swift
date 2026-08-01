@@ -77,15 +77,14 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     func runTests() async {
         webView.customUserAgent = Self.mobileUA
-        emit("=== LOCATION HUNT on search cards ===")
         let variants = [
-            ("plain", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"),
-            ("sortDistance", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk&sortBy=distance"),
+            ("no-radius", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium"),
+            ("with-radius", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium&radius=10"),
         ]
         for (name, url) in variants {
             await load(url)
-            try? await Task.sleep(for: .seconds(18))
-            emit("[\(name)] \(await js(Self.locationHuntJS))")
+            try? await Task.sleep(for: .seconds(16))
+            emit("[\(name)] \(await js(Self.cityCountJS))")
         }
         emit("=== DONE ===")
     }
@@ -141,6 +140,53 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     // MARK: - Injected probes
+
+    /// What text does each mobile card actually contain?
+    static let cardTextsJS = """
+    (function(){
+      var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
+      var cands = all.filter(function(el){
+        var i = el.querySelector('img');
+        return i && (i.getAttribute('src')||'').indexOf('fbcdn') !== -1;
+      });
+      var cards = cands.filter(function(el){
+        return !cands.some(function(o){ return o !== el && el.contains(o); });
+      });
+      var body = document.body.innerText || '';
+      return JSON.stringify({
+        count: cards.length,
+        first3: cards.slice(1, 4).map(function(el){ return (el.innerText||'').replace(/\\n/g, ' | ').slice(0, 90); }),
+        pageCities: (body.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}\\b/g) || []).slice(0, 6)
+      });
+    })()
+    """
+
+    /// Desktop cards use real item anchors and include location text.
+    static let desktopCardsJS = """
+    (function(){
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'));
+      var out = links.slice(0, 5).map(function(a){
+        var m = a.href.match(/marketplace\\/item\\/(\\d+)/);
+        return {id: m ? m[1] : null, text: (a.textContent||'').slice(0, 90)};
+      });
+      return JSON.stringify({count: links.length, sample: out});
+    })()
+    """
+
+    /// Count city-shaped text nodes in the whole document, not via innerText.
+    static let cityCountJS = """
+    (function(){
+      var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), n;
+      var cities = [], all = 0;
+      while ((n = w.nextNode())) {
+        var t = (n.textContent || '').trim();
+        if (!t) continue;
+        all++;
+        if (/^[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}$/.test(t)) cities.push(t);
+      }
+      return JSON.stringify({textNodes: all, cityNodes: cities.length, sample: cities.slice(0, 3)});
+    })()
+    """
 
     static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1"
 

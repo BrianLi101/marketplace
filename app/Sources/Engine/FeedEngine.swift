@@ -56,7 +56,10 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
         super.init()
         webView.navigationDelegate = self
         webView.customUserAgent = Self.mobileUserAgent
-        webView.scrollView.isScrollEnabled = false   // only this engine drives it
+        // Scrolling stays enabled. Disabling it made WebLite render a reduced
+        // card that omits the location line — and the engine drives scrolling
+        // through setContentOffset either way, so there was nothing to gain.
+        webView.scrollView.showsVerticalScrollIndicator = false
     }
 
     // MARK: - Loading
@@ -147,6 +150,21 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
             metrics.loginWallHit(surface: "feed-empty")
             await pacer.recordBlock()
             return []
+        }
+        if let sample = result.cards.dropFirst().first {
+            let cities = await evaluateRaw("""
+            (function(){
+              var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), n, all = 0, hits = [];
+              while ((n = w.nextNode())) {
+                var t = (n.textContent || '').trim();
+                if (!t) continue;
+                all++;
+                if (/^[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}$/.test(t)) hits.push(t);
+              }
+              return JSON.stringify({textNodes: all, cityNodes: hits.length, sample: hits.slice(0,2)});
+            })()
+            """) ?? "?"
+            Logger.feed.info("cities=\(cities, privacy: .public) sample=\(sample.texts.joined(separator: " ¦ "), privacy: .public)")
         }
         lastDocHeight = result.docHeight
         state = .ready

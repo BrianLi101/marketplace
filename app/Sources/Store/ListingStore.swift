@@ -42,7 +42,27 @@ final class ListingStore: ObservableObject {
         await feed.load(query)
         await ingest(await feed.extractCards())
         isLoadingFirstPage = false
+        await settle()
     }
+
+    /// WebLite paints cards before it finishes filling them — an image, price
+    /// and title arrive first, and the location line lands a beat later. So
+    /// re-read the DOM a few times and merge in whatever showed up. Costs
+    /// nothing: extraction is JavaScript against a page already loaded.
+    private func settle() async {
+        for delay in Self.settleDelays {
+            try? await Task.sleep(for: delay)
+            guard !listings.isEmpty else { return }
+            await ingest(await feed.extractCards())
+        }
+    }
+
+    /// Cumulative ~25s. WebLite fills a card's location line well after its
+    /// photo, price and title are painted — later than feels reasonable, but
+    /// re-reading is free, and stopping early is why locations went missing.
+    private static let settleDelays: [Duration] = [
+        .milliseconds(1200), .seconds(2), .seconds(4), .seconds(6), .seconds(6), .seconds(6)
+    ]
 
     /// §3.1 — triggered when the user is a few rows from the end, never
     /// speculatively. One batch at a time (§7.3: one page ahead, maximum).
@@ -59,6 +79,8 @@ final class ListingStore: ObservableObject {
         defer { isLoadingMore = false }
         if await feed.loadNextBatch() {
             await ingest(await feed.extractCards())
+            try? await Task.sleep(for: .seconds(2))
+            await ingest(await feed.extractCards())   // let the new batch finish filling in
         }
     }
 
@@ -88,7 +110,10 @@ final class ListingStore: ObservableObject {
                 counts.dropped += 1
                 continue
             }
-            guard !seenIDs.contains(listing.id) else { continue }
+            guard !seenIDs.contains(listing.id) else {
+                fillGaps(from: listing)
+                continue
+            }
             seenIDs.insert(listing.id)
             fresh.append(listing)
         }
@@ -131,6 +156,32 @@ final class ListingStore: ObservableObject {
             apply(updated)
         }
         return updated
+    }
+
+    /// §3.2's rule applied to the grid: never replace text that's already
+    /// correct, only fill in what was missing when the card was first read.
+    private func fillGaps(from parsed: Listing) {
+        guard let index = listings.firstIndex(where: { $0.id == parsed.id }) else { return }
+        var existing = listings[index]
+        var changed = false
+
+        if existing.locationText == nil, parsed.locationText != nil {
+            existing.locationText = parsed.locationText
+            changed = true
+        }
+        if existing.title == nil, parsed.title != nil {
+            existing.title = parsed.title
+            changed = true
+        }
+        if existing.badgeText == nil, parsed.badgeText != nil {
+            existing.badgeText = parsed.badgeText
+            changed = true
+        }
+        if existing.originalPriceText == nil, parsed.originalPriceText != nil {
+            existing.originalPriceText = parsed.originalPriceText
+            changed = true
+        }
+        if changed { listings[index] = existing }
     }
 
     private func apply(_ listing: Listing) {
