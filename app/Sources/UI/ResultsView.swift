@@ -48,7 +48,10 @@ struct ResultsView: View {
             .onChange(of: location.coordinate?.latitude) {
                 distances.setUserLocation(location.coordinate)
             }
-            .task { distances.setUserLocation(location.coordinate) }
+            .task {
+                distances.setUserLocation(location.coordinate)
+                await restoreLastQuery()
+            }
         }
     }
 
@@ -152,11 +155,21 @@ struct ResultsView: View {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         prefs.recordSearch(trimmed)
+        prefs.recordLastQuery(.search(trimmed))
         await store.run(makeQuery(.search(trimmed)))
     }
 
     private func browse(category: String) async {
+        prefs.recordLastQuery(.category(category))
         await store.run(makeQuery(.category(category)))
+    }
+
+    /// Reopen where the user left off. Runs once per launch, only when there's
+    /// nothing on screen yet, and never over the top of first-run onboarding.
+    private func restoreLastQuery() async {
+        guard store.query == nil, prefs.hasSeenFirstRun, let kind = prefs.lastQuery else { return }
+        if case .search(let term) = kind { searchText = term }
+        await store.run(makeQuery(kind))
     }
 
     private func rerunCurrentQuery() async {

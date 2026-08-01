@@ -15,6 +15,8 @@ final class Preferences: ObservableObject {
         static let hasSeenFirstRun = "hasSeenFirstRun"
         static let locationName = "locationName"
         static let locationSlug = "locationSlug"
+        static let lastQueryKind = "lastQueryKind"
+        static let lastQueryValue = "lastQueryValue"
     }
 
     private let defaults: UserDefaults
@@ -28,6 +30,10 @@ final class Preferences: ObservableObject {
     @Published var locationName: String? { didSet { defaults.set(locationName, forKey: Key.locationName) } }
     /// Facebook's city slug used in the search path ("sanfrancisco").
     @Published var locationSlug: String? { didSet { defaults.set(locationSlug, forKey: Key.locationSlug) } }
+    /// The last thing the user looked at, so reopening the app lands them back
+    /// there instead of on an empty screen.
+    @Published private(set) var lastQueryKind: String? { didSet { defaults.set(lastQueryKind, forKey: Key.lastQueryKind) } }
+    @Published private(set) var lastQueryValue: String? { didSet { defaults.set(lastQueryValue, forKey: Key.lastQueryValue) } }
 
     static let maxRecentSearches = 12
     static let radiusOptions = [2, 5, 10, 20, 40, 65, 100, 250]  // km; Facebook's own ladder
@@ -42,6 +48,35 @@ final class Preferences: ObservableObject {
         hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
         locationName = defaults.string(forKey: Key.locationName)
         locationSlug = defaults.string(forKey: Key.locationSlug)
+        lastQueryKind = defaults.string(forKey: Key.lastQueryKind)
+        lastQueryValue = defaults.string(forKey: Key.lastQueryValue)
+    }
+
+    /// Remembers what to reopen on. Categories are remembered too — browsing
+    /// "Free Stuff" is just as much "where I was" as typing a search.
+    func recordLastQuery(_ kind: SearchQuery.Kind) {
+        switch kind {
+        case .search(let term):
+            lastQueryKind = "search"
+            lastQueryValue = term
+        case .category(let name):
+            lastQueryKind = "category"
+            lastQueryValue = name
+        }
+    }
+
+    var lastQuery: SearchQuery.Kind? {
+        guard let lastQueryValue, !lastQueryValue.isEmpty else { return nil }
+        switch lastQueryKind {
+        case "search": return .search(lastQueryValue)
+        case "category": return .category(lastQueryValue)
+        default: return nil
+        }
+    }
+
+    func clearLastQuery() {
+        lastQueryKind = nil
+        lastQueryValue = nil
     }
 
     func recordSearch(_ term: String) {

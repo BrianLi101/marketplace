@@ -41,6 +41,15 @@ final class DistanceResolver: ObservableObject {
         userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
     }
 
+    /// The geocoded centre of a place name, once resolved. This is a city or
+    /// neighbourhood centroid, never the listing itself — Facebook only ever
+    /// says "Location is approximate".
+    func coordinate(for place: String?) -> CLLocationCoordinate2D? {
+        guard let key = normalize(place),
+              let pair = placeCoordinates[key], pair.count == 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1])
+    }
+
     /// Formatted distance, or nil until both the place and the user are known.
     func distanceText(for place: String?) -> String? {
         guard let key = normalize(place),

@@ -18,7 +18,22 @@ enum WebLiteScripts {
     /// Card markup differs between surfaces — search results wrap text in `h3`,
     /// category pages don't — so the only reliable signal is structural: an
     /// actionable container holding a listing photo, innermost first.
+    /// A TreeWalker over SHOW_TEXT visits the contents of <script> and <style>
+    /// too, which is how a page's JavaScript ended up rendered as a listing
+    /// description. Everything that reads text nodes must go through this.
+    private static let textGuard = """
+    function __mpTextOf(node) {
+      var parent = node.parentElement;
+      if (!parent) return null;
+      var tag = parent.tagName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') return null;
+      var t = (node.textContent || '').trim();
+      return t || null;
+    }
+    """
+
     private static let cardFinder = """
+    \(textGuard)
     // Listing photos are served from scontent-*.xx.fbcdn.net. Facebook's own
     // chrome (the wordmark, icons) is on static.xx.fbcdn.net/rsrc.php, so
     // matching "fbcdn" alone picks up the header logo and lets a card grow
@@ -57,7 +72,7 @@ enum WebLiteScripts {
           };
           cards.push(current);
         } else if (node.nodeType === 3 && current) {
-          var t = (node.textContent || '').trim();
+          var t = __mpTextOf(node);
           // Guard against the page furniture that trails the final card.
           if (t && t.length < 120) current.texts.push(t);
         }
@@ -143,41 +158,89 @@ enum WebLiteScripts {
     })()
     """
 
-    /// Detail pages are ordinary documents and much richer than the cards.
-    static let extractDetail = """
+    /// Detail pages are ordinary documents and much richer than the cards — but
+    /// they also carry "Related searches" and "Today's picks" modules holding
+    /// *other people's* listings. Everything below is scoped to stop at the
+    /// first of those markers, so neither the photo strip nor the description
+    /// can pick up a neighbouring listing's content.
+    static var extractDetail: String {
+        """
     (function(){
-      var text = document.body.innerText || '';
+      \(textGuard)
+      var STOP = /^(Related searches|Today's picks|Similar listings|More like this|Suggested|You may also like|See all|Sponsored)/i;
+
+      // Walk in document order, gathering this listing's own gallery, and stop
+      // dead at the first related-content heading.
+      var photos = [], seenPhotoIDs = {};
+      var walker = document.createTreeWalker(document.body,
+        NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
+      var node, mainText = '';
+      while ((node = walker.nextNode())) {
+        if (node.nodeType === 3) {
+          var t = __mpTextOf(node);
+          if (!t) continue;
+          if (STOP.test(t)) break;
+          mainText += t + '\\n';
+        } else if (node.tagName === 'IMG') {
+          var src = node.getAttribute('src') || '';
+          if (src.indexOf('scontent') === -1 || src.indexOf('rsrc.php') !== -1) continue;
+          // Same photo appears at several sizes; key on the fbcdn photo id.
+          var parts = src.split('/').pop().split('_');
+          var key = parts.length > 1 ? parts[1] : src;
+          if (seenPhotoIDs[key]) continue;
+          seenPhotoIDs[key] = 1;
+          photos.push(src);
+        }
+      }
+
       function after(label) {
         var re = new RegExp(label + "\\\\s*\\\\n+([^\\\\n]{1,120})", 'i');
-        var m = text.match(re);
+        var m = mainText.match(re);
         return m ? m[1].trim() : null;
       }
-      var photos = [];
-      var imgs = document.querySelectorAll('img');
-      for (var i = 0; i < imgs.length; i++) {
-        var s = imgs[i].getAttribute('src') || '';
-        if (s.indexOf('fbcdn') !== -1 && s.indexOf('/p32x32/') === -1 && photos.indexOf(s) === -1) photos.push(s);
+
+      var listed = (mainText.match(/Listed\\s+[^\\n]{1,40}/i) || [])[0] || null;
+      if (listed) listed = listed.replace(/\\s+in\\s+[A-Z][A-Za-z .'-]*(,\\s*[A-Z]{2})?\\s*$/, '').trim();
+
+      // Description. Some pages label it, most don't — the seller's text just
+      // follows the condition — so fall back to picking the longest line that
+      // isn't the title, the price, a date, a place, or a piece of chrome.
+      var description = after('Description');
+      if (!description) {
+        var CHROME = /^(Message|Save|Share|Details|Condition|Alert|More|See all|Log ?In|Sign ?Up|Marketplace|Home|Buying|Selling|Notifications|Inbox|Create new listing|Categories|Filters|Sort|Seller information|Send seller a message|Is this still available\\?)$/i;
+        var pageTitle = document.title || '';
+        var best = null;
+        mainText.split('\\n').forEach(function(line){
+          var t = line.trim();
+          if (t.length < 15) return;
+          if (CHROME.test(t)) return;
+          if (/^Listed\\b/i.test(t)) return;                       // "Listed 3 weeks ago…"
+          if (/Location is approximate/i.test(t)) return;
+          if (/^[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}$/.test(t)) return;  // a bare "Berkeley, CA"
+          if (/^[$£€¥₹]/.test(t)) return;                          // price runs
+          if (pageTitle.indexOf(t) !== -1) return;                 // the listing title
+          if (!best || t.length > best.length) best = t;
+        });
+        description = best;
       }
-      var listed = (text.match(/Listed\\s+[^\\n]{1,40}/i) || [])[0] || null;
-      // Description: the longest paragraph that isn't chrome.
-      var blocks = text.split(/\\n{2,}/).map(function(b){ return b.trim(); })
-        .filter(function(b){ return b.length > 40 && !/^(Log In|Marketplace|Related searches|Today's picks)/i.test(b); });
-      blocks.sort(function(a,b){ return b.length - a.length; });
+      if (description) description = description.slice(0, 1500);
+
       return JSON.stringify({
-        description: blocks[0] || null,
+        description: description || null,
         photoURLs: photos.slice(0, 12),
         postedText: listed,
         conditionText: after('Condition'),
         // Detail pages phrase this as "Listed 3 days ago in Berkeley, CA";
         // keep only the place itself so it can be geocoded and shown plainly.
         locationText: (function(){
-          var m = text.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}/);
+          var m = mainText.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}/);
           if (!m) return null;
           return m[0].replace(/^.*?\\bin\\s+/i, '').trim();
         })(),
-        loginWall: /you must log in|log into facebook to continue/i.test(text),
+        loginWall: /you must log in|log into facebook to continue/i.test(document.body.innerText || ''),
         title: document.title
       });
     })()
     """
+    }
 }

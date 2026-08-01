@@ -30,6 +30,7 @@ struct DetailView: View {
                 photoStrip
                 descriptionBlock
                 factsBlock
+                mapBlock
                 if didFail { unavailableNotice }
             }
             .padding(.horizontal)
@@ -52,7 +53,9 @@ struct DetailView: View {
             }
         }
         .task {
+            distances.resolve(place: listing.locationText)
             let enriched = await store.enrich(listing)
+            distances.resolve(place: enriched.locationText ?? enriched.detail?.locationText)
             withAnimation(.easeOut(duration: 0.25)) {
                 current = enriched
                 didFail = enriched.detail == nil
@@ -85,7 +88,8 @@ struct DetailView: View {
             if let title = current.title {
                 Text(title).font(.title3)
             }
-            if let location = current.locationText ?? detail?.locationText {
+            if let location = current.locationText ?? detail?.locationText,
+               distances.coordinate(for: location) == nil {
                 HStack(spacing: 5) {
                     Text(location)
                     if let distance = distances.distanceText(for: location) {
@@ -95,7 +99,6 @@ struct DetailView: View {
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .task { distances.resolve(place: location) }
             }
         }
     }
@@ -127,38 +130,64 @@ struct DetailView: View {
         }
     }
 
-    /// Reserves height so the fade-in doesn't shove the page around.
+    /// Reserves height so the fade-in doesn't shove the page around. Shows the
+    /// seller's own words only — the heading is dropped entirely when there's
+    /// nothing to put under it, rather than leaving a bare label.
+    @ViewBuilder
     private var descriptionBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Details").font(.headline)
-            if let description = detail?.description {
-                Text(description).font(.body)
-            } else if isEnriching {
+        if let description = detail?.description, !description.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Description").font(.headline)
+                Text(description)
+                    .font(.body)
+                    .textSelection(.enabled)
+            }
+        } else if isEnriching {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Description").font(.headline)
                 ForEach(0..<3, id: \.self) { _ in
                     RoundedRectangle(cornerRadius: 4)
                         .fill(Color(.tertiarySystemFill))
                         .frame(height: 13)
                 }
             }
+            .frame(minHeight: 90, alignment: .top)
         }
-        .frame(minHeight: 90, alignment: .top)
     }
 
     @ViewBuilder
     private var factsBlock: some View {
-        if let detail {
-            VStack(alignment: .leading, spacing: 6) {
-                if let condition = detail.conditionText { fact("Condition", condition) }
-                if let posted = detail.postedText { fact("Posted", posted) }
+        let rows = [
+            detail?.conditionText.map { ("Condition", $0) },
+            detail?.postedText.map { ("Posted", $0) }
+        ].compactMap { $0 }
+
+        if !rows.isEmpty {
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    if index > 0 { Divider() }
+                    HStack {
+                        Text(row.0).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(row.1)
+                    }
+                    .font(.subheadline)
+                    .padding(.vertical, 9)
+                    .padding(.horizontal, 12)
+                }
             }
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         }
     }
 
-    private func fact(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).font(.subheadline).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).font(.subheadline)
+    /// The map replaces the plain location line once a coordinate resolves.
+    @ViewBuilder
+    private var mapBlock: some View {
+        if let place = current.locationText ?? detail?.locationText,
+           let coordinate = distances.coordinate(for: place) {
+            LocationMapCard(place: place,
+                            coordinate: coordinate,
+                            distanceText: distances.distanceText(for: place))
         }
     }
 

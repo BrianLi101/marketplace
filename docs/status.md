@@ -17,6 +17,18 @@ scheme). Throwaway probe harness in `spike/`. Feasibility record in
   (measured 4.7s and 7.6s for two listings).
 - **Deep linking** — "View on Facebook" opens the listing's own
   `/marketplace/item/{id}` page. Verified against a live listing.
+- **Detail content is scoped to the listing.** Detail pages carry "Related
+  searches" and "Today's picks" modules full of *other people's* listings; the
+  extractor walks in document order and stops at the first such heading, so the
+  photo strip and description can't pick them up. Text nodes inside
+  `<script>`/`<style>` are excluded — a TreeWalker over `SHOW_TEXT` visits them,
+  which briefly rendered a page's JavaScript as a listing description.
+- **Approximate-area map** — an Apple Maps card with a radius circle around the
+  geocoded place, not a pin: Facebook says "Location is approximate" and a pin
+  would imply precision the seller never shared.
+- **Session restore** — the last search or category is persisted and re-run on
+  launch, so reopening lands where the user left off rather than on an empty
+  screen.
 - **Pagination** — driven by stepping the hidden webview's native scroll view,
   the only method that works (§ below).
 - **Radius pinning, keyword blocklist, hidden listings, recent-search pills,
