@@ -30,6 +30,7 @@ struct DetailView: View {
                 photoStrip
                 descriptionBlock
                 factsBlock
+                sellerBlock
                 mapBlock
                 if didFail { unavailableNotice }
             }
@@ -147,6 +148,44 @@ struct DetailView: View {
                 }
             }
             .frame(minHeight: 90, alignment: .top)
+        }
+    }
+
+    /// Seller identity comes only from the mobile item page. A rating is
+    /// optional even there — plenty of sellers have never been rated — so the
+    /// stars appear only when there is a real score behind them.
+    @ViewBuilder
+    private var sellerBlock: some View {
+        if let name = detail?.sellerName {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Seller").font(.subheadline).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(name).font(.body.weight(.medium))
+                    if let rating = detail?.sellerRating {
+                        HStack(spacing: 2) {
+                            ForEach(1...5, id: \.self) { star in
+                                Image(systemName: Double(star) <= rating.rounded()
+                                      ? "star.fill" : "star")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                            Text(String(format: "%.1f", rating)).font(.caption)
+                            if let count = detail?.sellerRatingCount {
+                                Text("(\(count))").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Rated \(String(format: "%.1f", rating)) out of 5"
+                            + (detail?.sellerRatingCount.map { " from \($0) ratings" } ?? ""))
+                    }
+                }
+                if let joined = detail?.sellerJoined {
+                    Text(joined).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal)
+            .padding(.top, 4)
         }
     }
 

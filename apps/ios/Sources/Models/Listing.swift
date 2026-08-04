@@ -30,6 +30,9 @@ struct ListingDetail: Codable, Equatable, Hashable {
     var conditionText: String?
     var locationText: String?
     var sellerName: String?
+    var sellerJoined: String?      // "Joined Facebook in 2011"
+    var sellerRating: Double?      // 4.8
+    var sellerRatingCount: Int?    // 12
 }
 
 extension Listing {

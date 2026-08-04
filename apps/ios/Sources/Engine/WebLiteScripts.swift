@@ -190,6 +190,11 @@ enum WebLiteScripts {
 
       // Walk in document order, gathering this listing's own gallery, and stop
       // dead at the first related-content heading.
+      // The seller's avatar is served from scontent like any listing photo, so
+      // the gallery has to end where the seller section begins. Text keeps
+      // accumulating past it — that is where the name and rating live.
+      var SELLER_START = /^(Seller information|Seller details|About the seller)$/i;
+      var inSellerSection = false;
       var photos = [], seenPhotoIDs = {};
       var walker = document.createTreeWalker(document.body,
         NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, null);
@@ -201,8 +206,12 @@ enum WebLiteScripts {
           if (STOP.test(t)) break;
           mainText += t + '\\n';
         } else if (node.tagName === 'IMG') {
+          if (inSellerSection) continue;
           var src = node.getAttribute('src') || '';
           if (src.indexOf('scontent') === -1 || src.indexOf('rsrc.php') !== -1) continue;
+          // Seller avatars are PNGs — including the shared grey placeholder,
+          // byte-identical across sellers. Listing photos are always JPEG.
+          if (src.split('?')[0].slice(-4).toLowerCase() === '.png') continue;
           // Same photo appears at several sizes; key on the fbcdn photo id.
           var parts = src.split('/').pop().split('_');
           var key = parts.length > 1 ? parts[1] : src;
@@ -252,9 +261,59 @@ enum WebLiteScripts {
       }
       if (description) description = description.slice(0, 1500);
 
+      // Seller identity renders only on the mobile item page. The name sits
+      // directly above "Joined Facebook in YYYY"; a rating, when the seller has
+      // one at all, looks like "4.8 (12)" on its own line.
+      var _lines = mainText.split(String.fromCharCode(10))
+                           .map(function(s){ return s.trim(); })
+                           .filter(function(s){ return s.length > 0; });
+      var _LABEL = /^(Seller information|Seller details|Details|Description|Condition|Location)$/i;
+      // "Joined Facebook in YYYY" anchors the seller block, but the name is not
+      // always the line directly above it — a rating and a count sit between
+      // them. Walk back past anything made only of digits, dots and brackets.
+      // WebLite renders its icons as private-use glyphs that arrive as text
+      // nodes, so a candidate name has to contain real letters to be a name.
+      function _hasLetters(s) {
+        var n = 0;
+        for (var k = 0; k < s.length; k++) {
+          var c = s.charAt(k).toLowerCase();
+          if (c >= 'a' && c <= 'z') { n++; if (n >= 2) return true; }
+        }
+        return false;
+      }
+      function _isScore(s) {
+        for (var k = 0; k < s.length; k++) {
+          if ('0123456789.() '.indexOf(s.charAt(k)) === -1) return false;
+        }
+        return true;
+      }
+      var sellerName = null, sellerJoined = null, sellerRating = null, sellerCount = null;
+      for (var _i2 = 0; _i2 < _lines.length; _i2++) {
+        var _ln = _lines[_i2];
+        if (_ln.indexOf('Joined Facebook') !== 0) continue;
+        sellerJoined = _ln;
+        var _j = _i2 - 1;
+        while (_j >= 0 && (_isScore(_lines[_j]) || !_hasLetters(_lines[_j]))) {
+          var _s = _lines[_j];
+          if (_s.charAt(0) === '(' && _s.charAt(_s.length - 1) === ')') {
+            sellerCount = _s.slice(1, _s.length - 1);
+          } else {
+            var _v = parseFloat(_s);
+            if (_v >= 0 && _v <= 5) sellerRating = _s;
+          }
+          _j--;
+        }
+        if (_j >= 0 && !_LABEL.test(_lines[_j]) && _lines[_j].length < 40
+            && _hasLetters(_lines[_j])) sellerName = _lines[_j];
+      }
+
       var _p = location.pathname, _i = _p.indexOf('/item/');
       return JSON.stringify({
         itemId: _i === -1 ? null : _p.slice(_i + 6).split('/')[0],
+        sellerName: sellerName,
+        sellerJoined: sellerJoined,
+        sellerRatingText: sellerRating,
+        sellerRatingCount: sellerCount,
         description: description || null,
         photoURLs: photos.slice(0, 12),
         postedText: listed,

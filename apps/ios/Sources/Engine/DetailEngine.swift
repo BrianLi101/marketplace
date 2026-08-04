@@ -22,6 +22,15 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// mobile it exposes real `/marketplace/item/{id}` anchors, which is the
     /// only reliable way to learn a listing's canonical URL. Its detail pages
     /// are also the richer ones.
+    /// Item pages are loaded with the *mobile* UA: it is the only surface that
+    /// publishes the seller's name, join date and rating. Condition used to be
+    /// the reason for preferring desktop here, and that reason is gone — it now
+    /// arrives on the card's own aria-label. The desktop UA is still needed for
+    /// `resolveItemURL`, which is why the agent is set per load rather than once.
+    static let mobileUserAgent =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 " +
+        "(KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1"
+
     static let desktopUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
         "(KHTML, like Gecko) Version/18.7 Safari/605.1.15"
@@ -57,6 +66,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         guard let searchURL = components.url else { return nil }
 
         let started = Date()
+        webView.customUserAgent = Self.desktopUserAgent
         await beginLoad(searchURL)
 
         guard let result = await poll(Self.itemLinksJS, as: ItemLinks.self,
@@ -156,6 +166,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         // your community on Marketplace" ended up as a description.
         let expectedID = url.pathComponents.first { $0.count > 8 && $0.allSatisfy(\.isNumber) }
 
+        webView.customUserAgent = Self.mobileUserAgent
         await beginLoad(url)
 
         // The description lands well before the gallery does, so requiring only
@@ -190,15 +201,35 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
             postedText: raw.postedText,
             conditionText: raw.conditionText,
             locationText: raw.locationText,
-            sellerName: nil     // login-gated; §4 hands off instead
+            sellerName: raw.sellerName,
+            sellerJoined: raw.sellerJoined,
+            sellerRating: raw.sellerRatingText.flatMap(Double.init),
+            sellerRatingCount: raw.sellerRatingCount.flatMap(Int.init)
         )
         cache[id] = detail
         metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: true)
         return detail
     }
 
+    /// Facebook prints a seller's score as "4.8 (12)" — the star average and
+    /// the number of ratings behind it, in one run of text.
+    static func rating(from text: String?) -> Double? {
+        guard let head = text?.split(separator: "(").first else { return nil }
+        return Double(head.trimmingCharacters(in: .whitespaces))
+    }
+
+    static func ratingCount(from text: String?) -> Int? {
+        guard let text, let open = text.firstIndex(of: "("),
+              let close = text.firstIndex(of: ")"), open < close else { return nil }
+        return Int(text[text.index(after: open)..<close].trimmingCharacters(in: .whitespaces))
+    }
+
     private struct RawDetail: Decodable {
         let itemId: String?
+        let sellerName: String?
+        let sellerJoined: String?
+        let sellerRatingText: String?
+        let sellerRatingCount: String?
         let description: String?
         let photoURLs: [String]
         let postedText: String?
