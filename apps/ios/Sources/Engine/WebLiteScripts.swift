@@ -228,7 +228,7 @@ enum WebLiteScripts {
       // list below never caught them — and being long sentences they won the
       // "longest line" fallback outright. A QR sign-in modal once rendered as
       // a listing's description. Matched as substrings, not whole lines.
-      var LOGIN_NOISE = /scan the qr code|codes match|log ?in to facebook|log into facebook|you must log ?in|create new account|forgot password|continue with (google|apple|facebook)|keep me signed in/i;
+      var LOGIN_NOISE = /scan the qr code|codes match|log ?in to facebook|log into facebook|you must log ?in|create new account|forgot password|continue with (google|apple|facebook)|keep me signed in|buy and sell in your community|browse or sell items|marketplace is a convenient/i;
 
       var description = after('Description');
       if (description && LOGIN_NOISE.test(description)) description = null;
@@ -252,7 +252,9 @@ enum WebLiteScripts {
       }
       if (description) description = description.slice(0, 1500);
 
+      var _p = location.pathname, _i = _p.indexOf('/item/');
       return JSON.stringify({
+        itemId: _i === -1 ? null : _p.slice(_i + 6).split('/')[0],
         description: description || null,
         photoURLs: photos.slice(0, 12),
         postedText: listed,

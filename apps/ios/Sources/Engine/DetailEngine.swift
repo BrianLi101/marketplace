@@ -150,6 +150,12 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         let started = Date()
         guard await pacer.waitForSlot() else { return nil }
 
+        // The page must be the listing we asked for. A redirect, a wall, or
+        // Marketplace's own landing page all render fine and would otherwise be
+        // extracted as if they were the listing — that is how "Buy and sell in
+        // your community on Marketplace" ended up as a description.
+        let expectedID = url.pathComponents.first { $0.count > 8 && $0.allSatisfy(\.isNumber) }
+
         await beginLoad(url)
 
         // The description lands well before the gallery does, so requiring only
@@ -165,6 +171,11 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
             return nil
         }
         Logger.detail.info("detail ok: desc=\(raw.description != nil) photos=\(raw.photoURLs.count) cond=\(raw.conditionText != nil)")
+        if let expectedID, raw.itemId != expectedID {
+            Logger.detail.warning("wrong page: wanted \(expectedID, privacy: .public), got \(raw.itemId ?? "none", privacy: .public)")
+            metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: false)
+            return nil
+        }
         if raw.loginWall {
             metrics.loginWallHit(surface: "detail")
             await pacer.recordBlock()
@@ -187,6 +198,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     private struct RawDetail: Decodable {
+        let itemId: String?
         let description: String?
         let photoURLs: [String]
         let postedText: String?
