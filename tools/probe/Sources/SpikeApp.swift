@@ -77,46 +77,36 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"
 
-    /// Is `condition` present on mobile item pages?
+    /// Can a synthetic tap fire WebLite's server-side action?
     ///
-    /// Tested per listing on BOTH surfaces, because a seller who never set a
-    /// condition would otherwise look identical to a surface that doesn't
-    /// publish one. Only listings where the desktop page *does* carry a
-    /// condition can say anything about the mobile page.
+    /// The earlier answer ("works in the spike, not in the app") is suspect:
+    /// the probes that produced it selected cards with a bare `fbcdn` match and
+    /// acted on `cards[0]`, which under that selector is Facebook's wordmark —
+    /// a link. A tap on it navigates to Marketplace's root, which looks like
+    /// success and isn't. This uses the app's stricter `scontent` selector,
+    /// prints what it tapped, and instruments every route a navigation could
+    /// take: the delegate, history pushState, window.open, and beforeunload.
     func runTests() async {
-        webView.customUserAgent = Self.desktopUA
-        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
-        try? await Task.sleep(for: .seconds(12))
-
-        let idsJSON = await js("""
-        (function(){
-          var seen = {}, out = [];
-          Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]')).forEach(function(a){
-            var m = (a.getAttribute('href')||'').match(/marketplace\\/item\\/(\\d+)/);
-            if (m && !seen[m[1]]) { seen[m[1]] = 1; out.push(m[1]); }
-          });
-          return JSON.stringify({ids: out.slice(0, 3)});
-        })()
-        """)
-        _ = idsJSON
-
-        // Does the `radius` query parameter push a slug URL out of the
-        // city-bearing layout? Each load gets a clean cookie jar, because a
-        // bucketing decision made on a previous navigation would confound it.
-        let cases: [(String, String)] = [
-            ("sf-matches-ip", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"),
-            ("oakland-differs", "https://www.facebook.com/marketplace/oakland/search/?query=desk"),
-        ]
-
         webView.customUserAgent = Self.mobileUA
-        for (label, url) in cases {
-            await clearCookies()
-            await load(url)
-            try? await Task.sleep(for: .seconds(14))
-            emit("ARIA [\(label)] \(await js(Self.ariaCoverageJS))")
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(15))
+
+        emit("CARDS \(await js(Self.strictCardsJS))")
+        emit("HOOKS \(await js(Self.navHookJS))")
+
+        for (name, script) in Self.tapAttempts {
+            emit("TAP[\(name)] \(await js(script))")
+            try? await Task.sleep(for: .seconds(4))
+            let state = await js(Self.navStateJS)
+            let live = webView.url?.absoluteString ?? "nil"
+            emit("AFTER[\(name)] \(state) | webView.url=\(live.prefix(90))")
+            if live.contains("/marketplace/item/") {
+                emit("*** NAVIGATED TO AN ITEM PAGE via \(name) ***")
+                break
+            }
         }
 
-        emit("=== CONDPROBE COMPLETE ===")
+        emit("=== TAPPROBE COMPLETE ===")
     }
 
     func extractStrings(_ json: String, key: String) -> [String] {
@@ -150,6 +140,17 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
             navContinuation?.resume()
             navContinuation = nil
         }
+    }
+
+    /// The decisive instrument: if a tap fires WebLite's action as a real
+    /// navigation, it shows up here even if it would later be cancelled.
+    nonisolated func webView(_ webView: WKWebView,
+                             decidePolicyFor navigationAction: WKNavigationAction,
+                             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        NSLog("SPIKE| NAVACTION type=%ld %@",
+              navigationAction.navigationType.rawValue,
+              navigationAction.request.url?.absoluteString ?? "nil")
+        decisionHandler(.allow)
     }
 
     nonisolated func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -625,6 +626,169 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
       });
     })()
     """
+
+    // MARK: - Tap probe
+
+    /// The app's card finder, exactly: a listing photo is on scontent and is
+    /// not Facebook's own chrome from rsrc.php. Under a bare `fbcdn` match the
+    /// wordmark becomes cards[0] and every "tap worked" result is really the
+    /// logo navigating home.
+    private static let strictCardFinder = """
+    function mpIsListingPhoto(img) {
+      var s = img.getAttribute('src') || '';
+      return s.indexOf('scontent') !== -1 && s.indexOf('rsrc.php') === -1;
+    }
+    function mpCards() {
+      var out = [], imgs = document.querySelectorAll('img');
+      for (var i = 0; i < imgs.length; i++) {
+        if (!mpIsListingPhoto(imgs[i])) continue;
+        var action = imgs[i].closest ? imgs[i].closest('[data-action-id]') : null;
+        out.push({el: action || imgs[i].parentElement, img: imgs[i]});
+      }
+      return out;
+    }
+    function mpTarget() {
+      var cards = mpCards();
+      if (!cards.length) return null;
+      var c = cards[0];
+      var r = c.el.getBoundingClientRect();
+      // Scroll it into view: a card below the fold has no hit-testable point.
+      if (r.top < 0 || r.bottom > window.innerHeight) {
+        c.el.scrollIntoView({block: 'center'});
+        r = c.el.getBoundingClientRect();
+      }
+      return {el: c.el, img: c.img, rect: r,
+              cx: r.left + r.width / 2, cy: r.top + r.height / 2};
+    }
+    """
+
+    /// What are we about to tap? Rule 2 of the probe checklist: echo the sample.
+    static let strictCardsJS = """
+    (function(){
+      \(strictCardFinder)
+      var cards = mpCards();
+      var t = mpTarget();
+      if (!t) return JSON.stringify({cards: 0});
+      var atPoint = document.elementFromPoint(t.cx, t.cy);
+      var chain = [], p = atPoint, d = 0;
+      while (p && d < 6) {
+        chain.push(p.tagName.toLowerCase()
+          + (p.getAttribute('role') ? '[role=' + p.getAttribute('role') + ']' : '')
+          + (p.hasAttribute('data-action-id') ? '[action-id]' : '')
+          + (p.tagName === 'A' ? '(href=' + (p.getAttribute('href') || '') .slice(0, 40) + ')' : ''));
+        p = p.parentElement; d++;
+      }
+      return JSON.stringify({
+        cards: cards.length,
+        tappingText: (t.el.innerText || '').replace(/\\n/g, ' | ').slice(0, 70),
+        tappingLabel: (t.img.getAttribute('alt') || '(none)').slice(0, 70),
+        rect: Math.round(t.rect.width) + 'x' + Math.round(t.rect.height)
+              + ' @' + Math.round(t.cx) + ',' + Math.round(t.cy),
+        elementAtPoint: chain,
+        sameAsCardRoot: atPoint === t.el || t.el.contains(atPoint),
+        actionId: (t.el.getAttribute('data-action-id') || '(none)').slice(0, 40),
+        url: location.href.slice(0, 80)
+      });
+    })()
+    """
+
+    /// WebLite may route client-side, in which case the navigation delegate
+    /// never fires. Catch every other exit too.
+    static let navHookJS = """
+    (function(){
+      if (window.__mpNav) return JSON.stringify({already: true});
+      window.__mpNav = [];
+      var ps = history.pushState, rs = history.replaceState;
+      history.pushState = function(){ window.__mpNav.push('pushState ' + arguments[2]); return ps.apply(history, arguments); };
+      history.replaceState = function(){ window.__mpNav.push('replaceState ' + arguments[2]); return rs.apply(history, arguments); };
+      var op = window.open;
+      window.open = function(u){ window.__mpNav.push('window.open ' + u); return op.apply(window, arguments); };
+      window.addEventListener('beforeunload', function(){ window.__mpNav.push('beforeunload'); });
+      window.addEventListener('popstate', function(){ window.__mpNav.push('popstate ' + location.href); });
+      // Did anything at all handle the gesture?
+      ['click','pointerdown','touchstart'].forEach(function(type){
+        document.addEventListener(type, function(e){
+          window.__mpNav.push('saw ' + type + ' on ' + e.target.tagName);
+        }, true);
+      });
+      return JSON.stringify({installed: true});
+    })()
+    """
+
+    static let navStateJS = """
+    (function(){
+      return JSON.stringify({
+        url: location.href.slice(0, 90),
+        title: (document.title || '').slice(0, 40),
+        events: (window.__mpNav || []).slice(0, 8)
+      });
+    })()
+    """
+
+    /// Four ways to deliver the gesture. The fourth is the one the earlier
+    /// round never tried: dispatch to whatever `elementFromPoint` reports,
+    /// which is what a real finger would actually hit, rather than to the card
+    /// container we happen to have a reference to.
+    static let tapAttempts: [(String, String)] = [
+        ("mouse-on-card", """
+        (function(){
+          \(strictCardFinder)
+          var t = mpTarget(); if (!t) return 'no-card';
+          window.__mpNav = window.__mpNav || [];
+          ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){
+            t.el.dispatchEvent(new MouseEvent(k, {bubbles:true, cancelable:true, composed:true, clientX:t.cx, clientY:t.cy}));
+          });
+          return 'sent';
+        })()
+        """),
+        ("touch-on-card", """
+        (function(){
+          \(strictCardFinder)
+          var t = mpTarget(); if (!t) return 'no-card';
+          function T(){ return new Touch({identifier:1, target:t.el, clientX:t.cx, clientY:t.cy,
+                                          pageX:t.cx, pageY:t.cy, radiusX:11, radiusY:11, force:1}); }
+          try {
+            t.el.dispatchEvent(new TouchEvent('touchstart', {bubbles:true, cancelable:true, composed:true,
+              touches:[T()], targetTouches:[T()], changedTouches:[T()]}));
+            t.el.dispatchEvent(new TouchEvent('touchend', {bubbles:true, cancelable:true, composed:true,
+              touches:[], targetTouches:[], changedTouches:[T()]}));
+          } catch (e) { return 'touch-err:' + e.message; }
+          return 'sent';
+        })()
+        """),
+        ("native-click-on-card", """
+        (function(){
+          \(strictCardFinder)
+          var t = mpTarget(); if (!t) return 'no-card';
+          if (typeof t.el.click !== 'function') return 'no-click-method';
+          t.el.click();
+          return 'sent';
+        })()
+        """),
+        ("full-gesture-at-point", """
+        (function(){
+          \(strictCardFinder)
+          var t = mpTarget(); if (!t) return 'no-card';
+          var target = document.elementFromPoint(t.cx, t.cy) || t.el;
+          function T(){ return new Touch({identifier:1, target:target, clientX:t.cx, clientY:t.cy,
+                                          pageX:t.cx, pageY:t.cy, radiusX:11, radiusY:11, force:1}); }
+          try {
+            target.dispatchEvent(new PointerEvent('pointerdown', {bubbles:true, cancelable:true, composed:true,
+              clientX:t.cx, clientY:t.cy, pointerType:'touch', isPrimary:true}));
+            target.dispatchEvent(new TouchEvent('touchstart', {bubbles:true, cancelable:true, composed:true,
+              touches:[T()], targetTouches:[T()], changedTouches:[T()]}));
+            target.dispatchEvent(new TouchEvent('touchend', {bubbles:true, cancelable:true, composed:true,
+              touches:[], targetTouches:[], changedTouches:[T()]}));
+            target.dispatchEvent(new PointerEvent('pointerup', {bubbles:true, cancelable:true, composed:true,
+              clientX:t.cx, clientY:t.cy, pointerType:'touch', isPrimary:true}));
+            ['mousedown','mouseup','click'].forEach(function(k){
+              target.dispatchEvent(new MouseEvent(k, {bubbles:true, cancelable:true, composed:true, clientX:t.cx, clientY:t.cy}));
+            });
+          } catch (e) { return 'err:' + e.message; }
+          return 'sent to ' + target.tagName;
+        })()
+        """)
+    ]
 
     static let mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1"
 
