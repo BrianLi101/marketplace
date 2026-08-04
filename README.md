@@ -29,7 +29,7 @@ Legend: **yes** · **no** · **~** partial or conditional · **?** not yet verif
 | **Approximate coordinates** | no | no | **yes** (map URL) | no | no | **yes** (JSON) |
 | "Location is approximate" note | — | — | no | — | — | yes |
 | Description | — | — | yes (labelled) | — | — | ~ present, unlabelled |
-| Condition | — | — | ? | — | — | yes |
+| Condition | — | — | ~ layout-dependent | — | — | **yes** |
 | Posted ("Listed 5 weeks ago") | — | — | yes | — | — | yes |
 | Photos (full set) | — | — | yes (24) | — | — | yes (29) |
 | **Seller name** | — | — | **yes** | — | — | **no** |
@@ -81,6 +81,18 @@ card-level distance still has to come from geocoding the city name.
 
 **Seller identity is mobile-only.** The mobile item page shows a seller name,
 join date, and rating where present; the web item page shows none of it.
+
+**Condition is web-only in practice.** Mobile item pages come in two layouts,
+and only one of them renders a Details/Condition block — measured 1 of 3
+listings (2026-08-04). The condition string does appear in the raw HTML of the
+other two, which is a trap: it belongs to the "Today's picks" cards at the
+bottom of the page, whose `aria-label`s read `"<title> for sale - <condition>"`.
+Those sit ~80,000 characters away from the listing's own id and in zero script
+tags, so there is no embedded JSON to fall back on. Reading the first HTML match
+would silently attribute a neighbouring listing's condition to this one.
+
+Consequence: a complete detail record needs **both** item surfaces — web for
+condition and the listing id, mobile for seller name and rating.
 
 **Depth and precision are on opposite surfaces.** Mobile paginates
 indefinitely; web caps at ~16 results and doesn't paginate logged out. Web

@@ -77,38 +77,49 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"
 
+    /// Is `condition` present on mobile item pages?
+    ///
+    /// Tested per listing on BOTH surfaces, because a seller who never set a
+    /// condition would otherwise look identical to a surface that doesn't
+    /// publish one. Only listings where the desktop page *does* carry a
+    /// condition can say anything about the mobile page.
     func runTests() async {
-        // 1. Get a live item id from the desktop search surface.
         webView.customUserAgent = Self.desktopUA
         await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
         try? await Task.sleep(for: .seconds(12))
-        let idJSON = await js("""
+
+        let idsJSON = await js("""
         (function(){
-          var a = document.querySelector('a[href*="/marketplace/item/"]');
-          var m = a ? (a.getAttribute('href')||'').match(/marketplace\\/item\\/(\\d+)/) : null;
-          return JSON.stringify({id: m ? m[1] : null});
+          var seen = {}, out = [];
+          Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]')).forEach(function(a){
+            var m = (a.getAttribute('href')||'').match(/marketplace\\/item\\/(\\d+)/);
+            if (m && !seen[m[1]]) { seen[m[1]] = 1; out.push(m[1]); }
+          });
+          return JSON.stringify({ids: out.slice(0, 3)});
         })()
         """)
-        guard let id = extract(idJSON, key: "id"), id != "<null>" else {
-            emit("no item id found"); emit("=== DONE ==="); return
+        _ = idsJSON
+        // Known-good ids from the first pass: web condition confirmed for all
+        // three, mobile innerText showed it for only the middle one.
+        let ids = ["3202113733318134", "1198359505779796", "1318664736543676"]
+        emit("testing \(ids.count) listings on mobile: \(ids.joined(separator: ", "))")
+
+        for (i, id) in ids.enumerated() {
+            let itemURL = "https://www.facebook.com/marketplace/item/\(id)/"
+            webView.customUserAgent = Self.mobileUA
+            await load(itemURL)
+            try? await Task.sleep(for: .seconds(14))
+            emit("HIDE\(i) CTX \(await js(Self.conditionContextJS))")
         }
-        let itemURL = "https://www.facebook.com/marketplace/item/\(id)/"
-        emit("item: \(itemURL)")
 
-        // 2. Same item page, both surfaces.
-        emit("--- DESKTOP item page ---")
-        await load(itemURL)
-        try? await Task.sleep(for: .seconds(12))
-        emit("desktop: \(await js(Self.fieldDumpJS))")
+        emit("=== CONDPROBE COMPLETE ===")
+    }
 
-        emit("--- MOBILE item page ---")
-        webView.customUserAgent = Self.mobileUA
-        await clearCookies()
-        await load(itemURL)
-        try? await Task.sleep(for: .seconds(15))
-        emit("mobile: \(await js(Self.fieldDumpJS))")
-
-        emit("=== DONE ===")
+    func extractStrings(_ json: String, key: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let v = obj[key] as? [String] else { return [] }
+        return v
     }
 
     func clearCookies() async {
@@ -362,6 +373,125 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         dimensions: has(/Estimated \\(WxDxH\\)/i),
         category: (body.match(/Marketplace\\s*›?\\s*([A-Za-z &]{3,30})/) || [])[1] || null,
         loginWall: has(/you must log in|log into facebook to continue/i)
+      });
+    })()
+    """
+
+    /// The condition string is in the HTML but not the rendered DOM. What is
+    /// it attached to — this listing's JSON, or a related listing's?
+    static let conditionContextJS = """
+    (function(){
+      var html = document.documentElement.outerHTML;
+      var id = (location.pathname.match(/item\\/(\\d+)/) || [])[1] || null;
+
+      var re = /Used\\s*[\\u2013\\u2014-]\\s*(?:Like New|Good|Fair)/gi, m, hits = [];
+      while ((m = re.exec(html)) !== null && hits.length < 4) {
+        hits.push({
+          v: m[0],
+          at: m.index,
+          before: html.slice(Math.max(0, m.index - 120), m.index).replace(/\\s+/g, ' ').slice(-110)
+        });
+      }
+
+      // Where does this listing's own id sit, for distance comparison?
+      var idPos = [];
+      if (id) {
+        var r2 = new RegExp(id, 'g'), m2;
+        while ((m2 = r2.exec(html)) !== null && idPos.length < 8) idPos.push(m2.index);
+      }
+
+      // Does any <script> carry it, and does that script also name this id?
+      var inScript = 0, inScriptWithId = 0;
+      Array.prototype.slice.call(document.querySelectorAll('script')).forEach(function(s){
+        var t = s.textContent || '';
+        if (!/Used\\s*[\\u2013\\u2014-]\\s*(?:Like New|Good|Fair)/i.test(t)) return;
+        inScript++;
+        if (id && t.indexOf(id) !== -1) inScriptWithId++;
+      });
+
+      return JSON.stringify({
+        title: (document.title || '').slice(0, 30),
+        id: id,
+        idPositions: idPos,
+        hits: hits,
+        scriptsWithCondition: inScript,
+        scriptsWithConditionAndId: inScriptWithId
+      });
+    })()
+    """
+
+    /// When `innerText` shows no condition, is the text nevertheless in the
+    /// DOM — hidden, collapsed, or behind a "More" disclosure? That decides
+    /// whether mobile can serve condition at all, or only sometimes.
+    static let hiddenConditionProbeJS = """
+    (function(){
+      var html = document.documentElement.outerHTML;
+      var body = document.body.innerText || '';
+      var VAL = /Used\\s*[\\u2013\\u2014-]\\s*(?:Like New|Good|Fair)|\\bBrand New\\b/i;
+
+      // Leaf elements whose text is exactly the label or a condition value.
+      var hits = [];
+      Array.prototype.slice.call(document.querySelectorAll('*')).forEach(function(el){
+        if (el.children.length) return;
+        var t = (el.textContent || '').trim();
+        if (!/^Condition$/i.test(t) && !VAL.test(t)) return;
+        if (t.length > 26) return;
+        var cs = window.getComputedStyle(el);
+        var r = el.getBoundingClientRect();
+        hits.push(t + ' [' + cs.display + '/' + cs.visibility + '/h' + Math.round(r.height) + ']');
+      });
+
+      // Disclosure affordances that might be hiding a details block.
+      var more = [];
+      Array.prototype.slice.call(document.querySelectorAll('[role="button"],div[data-action-id],a')).forEach(function(el){
+        var t = (el.innerText || '').trim();
+        if (t && t.length < 22 && /\\b(more|see|show|detail)/i.test(t)) more.push(t);
+      });
+
+      return JSON.stringify({
+        title: (document.title || '').slice(0, 32),
+        innerTextHasLabel: /\\bCondition\\b/i.test(body),
+        htmlHasLabel: /Condition/i.test(html),
+        htmlHasValue: VAL.test(html),
+        htmlValueSamples: (html.match(/Used\\s*[\\u2013\\u2014-]\\s*(?:Like New|Good|Fair)/gi) || []).slice(0, 3),
+        domHits: hits.slice(0, 6),
+        moreControls: Object.keys(more.reduce(function(a,s){ a[s]=1; return a; },{})).slice(0, 6),
+        breadcrumb: /Marketplace\\s*\\u203a/.test(body),
+        htmlLen: html.length
+      });
+    })()
+    """
+
+    /// Condition on an item page — label, value, and enough surrounding
+    /// structure to tell "absent" from "phrased differently".
+    static let conditionProbeJS = """
+    (function(){
+      var body = document.body.innerText || '';
+
+      // The label, and whatever follows it.
+      var m = body.match(/\\bCondition\\b[\\s\\S]{0,40}/i);
+      var afterLabel = m ? m[0].replace(/\\n+/g, ' / ').trim() : null;
+
+      // The values themselves, independent of any label — mobile may render
+      // the value with different (or no) surrounding chrome.
+      var vals = (body.match(/Used\\s*[\\u2013\\u2014-]\\s*(Like New|Good|Fair)|\\bNew\\b|\\bRefurbished\\b/gi) || []);
+      var uniq = Object.keys(vals.reduce(function(a,s){ a[s.trim()] = 1; return a; }, {}));
+
+      // Short standalone lines: what labels does this surface actually use?
+      var lines = body.split('\\n').map(function(s){ return s.trim(); })
+                      .filter(function(s){ return s.length > 0 && s.length < 30; });
+
+      return JSON.stringify({
+        surface: navigator.userAgent.indexOf('iPhone') !== -1 ? 'mobile' : 'web',
+        title: (document.title || '').slice(0, 38),
+        conditionLabel: !!m,
+        afterLabel: afterLabel,
+        valuesFound: uniq.slice(0, 4),
+        detailsLabel: /\\bDetails\\b/i.test(body),
+        seller: (body.match(/Joined Facebook[^\\n]{0,24}/i) || [])[0] || null,
+        shortLines: lines.slice(0, 26),
+        bodyLen: body.length,
+        loginWall: /you must log in|log in to continue|Log In to Facebook/i.test(body)
       });
     })()
     """

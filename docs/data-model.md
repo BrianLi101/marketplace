@@ -279,17 +279,27 @@ The detail path is authoritative, but "the detail path" is two different pages:
 |---|---|---|
 | Seller name / rating / joined | **yes** | no |
 | Listing ID | no | **yes** |
-| Condition | ? unverified | **yes** |
+| Condition | ~ layout-dependent, 1 of 3 | **yes** |
 | Coordinates, description, photos | yes | yes |
 
-`DetailEngine` currently uses the desktop UA, so today's flow gets condition and
-the listing ID and **no seller data at all** — and seller rating is the
-"highly rated seller" signal we want. So the write path needs either a second
-page load against mobile, or a decision to defer seller data.
+Measured 2026-08-04. Mobile item pages come in two layouts and only one renders
+a Details/Condition block. The condition string is present in the raw HTML of
+the pages that don't render it — but it belongs to the "Today's picks" cards at
+the foot of the page, whose `aria-label`s read `"<title> for sale -
+<condition>"`, sitting ~80,000 characters from the listing's own id and in zero
+script tags. Reading the first HTML match would attribute a neighbour's
+condition to this listing. There is no fallback: if the block isn't rendered,
+mobile does not know the condition.
 
-Open question 3 settles it: if condition exists on mobile item pages, mobile
-alone covers everything except the listing ID, which we resolve separately
-anyway.
+**So a complete detail record requires both surfaces.** Neither one is a
+superset. `DetailEngine` currently uses the desktop UA, so today's flow gets
+condition and the listing id and no seller data at all — and seller rating is
+the "highly rated seller" signal we want.
+
+Cost of a detail open, if we want everything: one desktop *search* load to
+resolve the id via `ItemMatcher`, plus a web item page, plus a mobile item page.
+Three loads. Dropping condition would take it to two; dropping seller data would
+take it to two the other way. That's a product call, not a technical one.
 
 Where both surfaces are loaded, the merge rule is: fill nulls, never overwrite a
 non-null with a null. Coordinates are byte-identical across surfaces, so there
@@ -334,20 +344,26 @@ Ordered by how much damage a wrong guess does.
 1. **Is a feed card's photo always the item page's first photo?** The entire
    identity model depends on it. Cheap to test: resolve a card to its item page
    and compare the card's FBID against photo 0.
-2. **Can a card's price differ from the item page's?** Shipping-inclusive
-   pricing or promotional display would mean sightings write prices that
-   disagree with reality and manufacture phantom `listing_changes` rows.
-3. **Is `condition` on mobile item pages?** Still the `?` in the README matrix.
-   Decides whether one surface can serve a complete detail record, and therefore
-   whether we need two page loads per open.
-4. **How does a sold listing present on its item page?** We've decided *where*
+2. **How does a sold listing present on its item page?** We've decided *where*
    to detect it; we haven't verified *what* it looks like. Badge, banner,
    redirect, 404?
-5. **Do listings ever contain video?** Unverified — `kind` is modelled for it
+3. **Do mobile *feed* cards carry condition in an `aria-label`?** A lead, not a
+   finding. The related-listing cards on mobile item pages label themselves
+   `"<title> for sale - <condition>"`. If search cards do the same, condition is
+   available at sighting time and the matrix row for mobile search is wrong.
+4. **Do listings ever contain video?** Unverified — `kind` is modelled for it
    speculatively.
-6. **Can an image URL be rebuilt from an FBID?** If not, cached images need
+5. **Can an image URL be rebuilt from an FBID?** If not, cached images need
    either a live page load or us hosting copies, and the second has
    implications worth thinking about before it's load-bearing.
+
+Closed since v0.2:
+
+- ~~Can a card's price differ from the item page's?~~ No — shipping-inclusive
+  and promotional pricing aren't things Facebook Marketplace does. But listings
+  can be **free**, so `price_minor = 0` is a valid value distinct from `NULL`,
+  and any truthiness check on price would silently drop free listings.
+- ~~Is `condition` on mobile item pages?~~ Only sometimes — see below.
 
 ---
 
