@@ -33,7 +33,6 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     private let pacer: RequestPacer
 
     private var navigationContinuation: CheckedContinuation<Void, Never>?
-    private var pendingItemURL: CheckedContinuation<URL?, Never>?
     private var isResolvingItemURL = false
     private var lastDocHeight: Double = 0
     private var pageIndex = 0
@@ -216,45 +215,42 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
 
     /// Clicks the card and catches the navigation it triggers, without letting
     /// it happen. Costs no network and leaves the feed exactly where it was.
+    /// Taps a card and reads the listing id out of the resulting URL.
+    ///
+    /// WebLite routes the tap **client-side** through `history.replaceState`,
+    /// so no navigation ever reaches `decidePolicyFor`. Waiting on the
+    /// navigation delegate — which is what this used to do — timed out after
+    /// ten seconds every time while the tap was working perfectly. Poll
+    /// `location.href` instead, then wind the history back so the feed is
+    /// exactly where the user left it: verified to restore all 26 cards.
     func resolveItemURL(cardIndex: Int) async -> URL? {
         isResolvingItemURL = true
         defer { isResolvingItemURL = false }
 
-        return await withCheckedContinuation { (cont: CheckedContinuation<URL?, Never>) in
-            pendingItemURL = cont
-            Task {
-                let clicked = await evaluate(WebLiteScripts.click(index: cardIndex))
-                Logger.feed.info("click card \(cardIndex): \(clicked ?? "nil", privacy: .public)")
-                // WebLite dispatches the action server-side, so the navigation can
-                // take a few seconds to appear. Don't wait forever if the tap missed.
-                try? await Task.sleep(for: .seconds(10))
-                if let pending = self.pendingItemURL {
-                    self.pendingItemURL = nil
-                    pending.resume(returning: nil)
-                }
+        _ = await evaluate(WebLiteScripts.click(index: cardIndex))
+
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(6)
+        var found: URL?
+        while clock.now < deadline {
+            if let href = await evaluateRaw("location.href"),
+               href.contains("/marketplace/item/") {
+                found = URL(string: href)
+                break
             }
+            try? await Task.sleep(for: .milliseconds(150))
         }
+
+        // Restore the feed whether or not the tap landed — a stranded item page
+        // would break the next extraction.
+        _ = await evaluateRaw("(function(){ history.back(); return 'back'; })()")
+        try? await Task.sleep(for: .milliseconds(800))
+
+        Logger.feed.info("tap card \(cardIndex): \(found?.absoluteString ?? "no id", privacy: .public)")
+        return found
     }
 
     // MARK: - WKNavigationDelegate
-
-    nonisolated func webView(_ webView: WKWebView,
-                             decidePolicyFor navigationAction: WKNavigationAction,
-                             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        let url = navigationAction.request.url
-        Task { @MainActor in
-            Logger.feed.info("nav policy: \(url?.absoluteString ?? "nil", privacy: .public) resolving=\(self.isResolvingItemURL)")
-            if let url, url.path.contains("/marketplace/item/"), self.isResolvingItemURL {
-                if let pending = self.pendingItemURL {
-                    self.pendingItemURL = nil
-                    pending.resume(returning: url)
-                }
-                decisionHandler(.cancel)    // keep the feed where it is
-                return
-            }
-            decisionHandler(.allow)
-        }
-    }
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in

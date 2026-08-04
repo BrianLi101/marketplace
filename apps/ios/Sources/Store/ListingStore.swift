@@ -138,7 +138,15 @@ final class ListingStore: ObservableObject {
         var updated = listing
 
         if updated.itemURL == nil {
-            updated.itemURL = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
+            // Tapping the card in the hidden feed resolves the id client-side
+            // and costs no page load at all. The desktop title search stays as
+            // a fallback for cards the tap can't reach — it's slower, needs a
+            // 6-character title, and can pick wrong among ties.
+            var resolved = await feed.resolveItemURL(cardIndex: listing.cardIndex)
+            if resolved == nil {
+                resolved = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
+            }
+            updated.itemURL = resolved
             apply(updated)
         }
         guard let url = updated.itemURL else { return updated }
