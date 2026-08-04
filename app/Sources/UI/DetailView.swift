@@ -157,8 +157,11 @@ struct DetailView: View {
 
     @ViewBuilder
     private var factsBlock: some View {
+        // The card label already carried the condition, so it can render on the
+        // first frame instead of waiting for the detail page to load.
+        let condition = current.conditionText ?? detail?.conditionText
         let rows = [
-            detail?.conditionText.map { ("Condition", $0) },
+            condition.map { ("Condition", $0) },
             detail?.postedText.map { ("Posted", $0) }
         ].compactMap { $0 }
 

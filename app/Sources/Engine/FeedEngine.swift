@@ -119,6 +119,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
         let index: Int
         let actionId: String?
         let imageURL: String?
+        let label: String?
         let texts: [String]
         let fullText: String
     }

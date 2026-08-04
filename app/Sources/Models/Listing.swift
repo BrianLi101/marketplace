@@ -11,7 +11,8 @@ struct Listing: Identifiable, Codable, Equatable, Hashable {
     var title: String?
     var priceText: String?      // kept as displayed: "Free", "$1,200", ranges
     var originalPriceText: String?
-    var locationText: String?   // usually nil on mobile cards; detail fills it in
+    var locationText: String?   // from the card's aria-label; detail fills gaps
+    var conditionText: String?  // "Used - Good" — the card label carries it
     var thumbnailURL: URL?
     var itemURL: URL?           // nil until resolved by tapping through
     var badgeText: String?      // "Price drop", "Sold", …

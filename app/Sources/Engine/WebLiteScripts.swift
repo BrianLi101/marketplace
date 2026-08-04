@@ -54,6 +54,23 @@ enum WebLiteScripts {
     // card without also holding the next. Document order is reliable instead —
     // every text node between one listing photo and the next belongs to that
     // listing. This walks the page once and buckets accordingly.
+    // Every search card labels itself with far more than it renders:
+    //   "Desk for sale - Used - Good - $75 in Oakland, CA"
+    //   "Free Computer desk for sale - Used - Like New in El Sobrante, CA"
+    // The label carries the *untruncated* title, the condition and the city,
+    // none of which reach the rendered text on every layout. Read it off the
+    // listing's own image rather than searching the container: a
+    // `querySelector('[aria-label]')` can cross into a neighbouring card, and
+    // the photo is unambiguously this listing's.
+    function __mpCardLabel(img, action) {
+      var alt = img.getAttribute('alt');
+      if (alt && alt.length > 12) return alt;
+      if (action) {
+        var own = action.getAttribute('aria-label');
+        if (own && own.length > 12) return own;
+      }
+      return null;
+    }
     function __mpCards() {
       var walker = document.createTreeWalker(
         document.body,
@@ -68,6 +85,7 @@ enum WebLiteScripts {
             element: action || node.parentElement,
             imageURL: node.getAttribute('src'),
             actionId: action ? action.getAttribute('data-action-id') : null,
+            label: __mpCardLabel(node, action),
             texts: []
           };
           cards.push(current);
@@ -94,6 +112,7 @@ enum WebLiteScripts {
               index: i,
               actionId: card.actionId,
               imageURL: card.imageURL,
+              label: card.label,
               texts: card.texts,
               fullText: card.texts.join(' | ').slice(0, 300)
             });

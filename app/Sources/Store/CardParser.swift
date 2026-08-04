@@ -11,22 +11,31 @@ enum CardParser {
     static let knownBadges = ["price drop", "just listed", "sold", "pending", "sponsored", "free shipping"]
 
     static func parse(_ card: FeedEngine.RawCard, now: Date = Date()) -> Listing? {
+        // The card's own aria-label is richer than anything it renders: an
+        // untruncated title, the condition, and a city that one of the two
+        // search layouts omits from the visible text entirely.
+        let label = card.label.flatMap(CardLabel.parse)
         let runs = normalizedRuns(card)
-        guard !runs.isEmpty else { return nil }
+        guard !runs.isEmpty || label != nil else { return nil }
 
         let badge = runs.first { knownBadges.contains($0.lowercased()) }
         let remaining = runs.filter { $0 != badge }
 
         let priceRuns = remaining.filter(isPrice)
-        let price = priceRuns.first
         // A struck-through original price follows the current one ("$25" "$40").
         let originalPrice = priceRuns.count > 1 ? priceRuns[1] : nil
 
-        let title = remaining
+        let renderedTitle = remaining
             .filter { !isPrice($0) && !isLocation($0) }
             .max(by: { $0.count < $1.count })
 
-        let location = remaining.first(where: isLocation)
+        // The label wins wherever it has a value. Its title is the full one
+        // rather than the elided render, and its city exists on layouts where
+        // no city is drawn at all. Price stays render-first because the runs
+        // also carry the struck-through original, which the label omits.
+        let title = label?.title ?? renderedTitle
+        let location = label?.locationText ?? remaining.first(where: isLocation)
+        let price = priceRuns.first ?? label?.priceText
         let thumbnail = card.imageURL.flatMap(URL.init(string:))
 
         // A card with neither a price nor a title is chrome, not a listing.
@@ -38,6 +47,7 @@ enum CardParser {
             priceText: price,
             originalPriceText: originalPrice,
             locationText: location,
+            conditionText: label?.conditionText,
             thumbnailURL: thumbnail,
             itemURL: nil,
             badgeText: badge,
