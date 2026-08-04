@@ -134,11 +134,6 @@ struct ResultsView: View {
         StaggeredGrid(items: store.listings, columns: 2, spacing: 12) { listing in
             ListingCard(listing: listing, namespace: heroNamespace)
                 .onTapGesture { selected = listing }
-                .contextMenu {
-                    Button(role: .destructive) { store.hide(listing) } label: {
-                        Label("Hide this listing", systemImage: "eye.slash")
-                    }
-                }
                 .task { await store.loadMoreIfNeeded(currentItem: listing) }
         }
         .padding(.horizontal, 12)

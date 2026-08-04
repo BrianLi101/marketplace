@@ -9,8 +9,6 @@ final class Preferences: ObservableObject {
 
     private enum Key {
         static let recentSearches = "recentSearches"
-        static let blockedKeywords = "blockedKeywords"
-        static let hiddenListings = "hiddenListings"
         static let radiusKM = "radiusKM"
         static let hasSeenFirstRun = "hasSeenFirstRun"
         static let locationName = "locationName"
@@ -22,8 +20,6 @@ final class Preferences: ObservableObject {
     private let defaults: UserDefaults
 
     @Published var recentSearches: [String] { didSet { defaults.set(recentSearches, forKey: Key.recentSearches) } }
-    @Published var blockedKeywords: [String] { didSet { defaults.set(blockedKeywords, forKey: Key.blockedKeywords) } }
-    @Published var hiddenListingIDs: Set<String> { didSet { defaults.set(Array(hiddenListingIDs), forKey: Key.hiddenListings) } }
     @Published var radiusKM: Int { didSet { defaults.set(radiusKM, forKey: Key.radiusKM) } }
     @Published var hasSeenFirstRun: Bool { didSet { defaults.set(hasSeenFirstRun, forKey: Key.hasSeenFirstRun) } }
     /// Human-readable place name for the UI ("San Francisco, CA").
@@ -42,8 +38,6 @@ final class Preferences: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
-        blockedKeywords = defaults.stringArray(forKey: Key.blockedKeywords) ?? []
-        hiddenListingIDs = Set(defaults.stringArray(forKey: Key.hiddenListings) ?? [])
         radiusKM = defaults.object(forKey: Key.radiusKM) as? Int ?? 10
         hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
         locationName = defaults.string(forKey: Key.locationName)
@@ -91,12 +85,4 @@ final class Preferences: ObservableObject {
         recentSearches.removeAll { $0.caseInsensitiveCompare(term) == .orderedSame }
     }
 
-    func hide(_ id: String) { hiddenListingIDs.insert(id) }
-    func unhideAll() { hiddenListingIDs.removeAll() }
-
-    func addKeyword(_ word: String) {
-        let trimmed = word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !trimmed.isEmpty, !blockedKeywords.contains(trimmed) else { return }
-        blockedKeywords.append(trimmed)
-    }
 }

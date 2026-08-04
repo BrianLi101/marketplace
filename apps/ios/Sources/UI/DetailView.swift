@@ -39,16 +39,11 @@ struct DetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) { primaryAction }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if let url = current.itemURL {
-                        ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
-                    }
-                    Button(role: .destructive) { store.hide(current) } label: {
-                        Label("Hide this listing", systemImage: "eye.slash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
+            // Sharing was the only other entry in what used to be an overflow
+            // menu, so it goes straight in the toolbar rather than behind one.
+            if let url = current.itemURL {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
                 }
             }
         }

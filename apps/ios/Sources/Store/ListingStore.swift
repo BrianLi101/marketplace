@@ -127,12 +127,7 @@ final class ListingStore: ObservableObject {
     /// §6.2 — filtering happens in Swift, after extraction, so the page's own
     /// scripts stay undisturbed and the rules are unit-testable.
     private func shouldFilter(_ listing: Listing) -> Bool {
-        if prefs.hiddenListingIDs.contains(listing.id) { return true }
-        if listing.badgeText?.lowercased() == "sponsored" { return true }
-        let haystack = [listing.title, listing.priceText]
-            .compactMap { $0?.lowercased() }
-            .joined(separator: " ")
-        return prefs.blockedKeywords.contains { !$0.isEmpty && haystack.contains($0) }
+        listing.badgeText?.lowercased() == "sponsored"
     }
 
     // MARK: - Detail
@@ -186,10 +181,5 @@ final class ListingStore: ObservableObject {
     private func apply(_ listing: Listing) {
         guard let index = listings.firstIndex(where: { $0.id == listing.id }) else { return }
         listings[index] = listing
-    }
-
-    func hide(_ listing: Listing) {
-        prefs.hide(listing.id)
-        listings.removeAll { $0.id == listing.id }
     }
 }

@@ -35,8 +35,9 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
   screen.
 - **Pagination** — driven by stepping the hidden webview's native scroll view,
   the only method that works (§ below).
-- **Radius pinning, keyword blocklist, hidden listings, recent-search pills,
-  first-run, settings, request pacing with backoff, parse-health metrics.**
+- **Radius pinning, recent-search pills, first-run, settings, request pacing
+  with backoff, parse-health metrics.** Sponsored cards are filtered out; the
+  keyword blocklist and per-listing hiding were removed on 2026-08-04.
 
 ## The three findings the implementation is built around
 
