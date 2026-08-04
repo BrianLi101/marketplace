@@ -52,7 +52,37 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
 
 ## Known gaps
 
-### Item URLs — solved, via the desktop surface
+### Item URLs — the tap works; the app watched the wrong channel
+
+**Verified 2026-08-04.** A plain `MouseEvent` sequence on a card navigates to
+that listing's item page. WebLite routes it **client-side via
+`history.replaceState`**, so no navigation ever reaches `decidePolicyFor` —
+which is the only thing that resumed `pendingItemURL`. The resolve timed out
+after 10s every time while the tap was working perfectly.
+
+Two listings, both clean:
+
+| | id | description | photos | seller | coords |
+|---|---|---|---|---|---|
+| card 0 | 1244917550907745 | yes | 18 | Hannah | 37.762756…,-122.448120… |
+| card 1 | 2119352205659543 | yes | 19 | Erin | 37.795715…,-122.437133… |
+
+`history.back()` restores the feed exactly — 26 cards, same first card, same
+URL — both times. `stopMarker` was false on both, so mobile item pages don't
+carry the "Today's picks" contamination the desktop scoping was built for.
+
+This makes the desktop search redundant: one tap yields the id *and* the item
+page, on the surface that has seller data. `ItemMatcher` and its 6-character
+title floor become deletable.
+
+The earlier "works in the spike, not in the app" record was an artifact — those
+probes selected cards by bare `fbcdn` and acted on `cards[0]`, which under that
+selector is Facebook's wordmark, and the wordmark is a link.
+
+<details>
+<summary>Superseded: resolving via the desktop surface</summary>
+
+
 
 Listing ids exist nowhere in the mobile DOM, and synthetic taps never fired
 WebLite's server-side action from inside the app (mouse events, touch events,
@@ -70,6 +100,8 @@ Cost is one page load per listing the user actually opens, on top of the detail
 page load that §3.2 already requires. Verified end to end: tapping a card
 resolves the id, loads the real description, condition and photos, and "View on
 Facebook" deep-links to that exact item page.
+
+</details>
 
 ### Search cards often carry no location — SOLVED 2026-08-04
 

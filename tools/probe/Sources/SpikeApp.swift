@@ -77,36 +77,25 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"
 
-    /// Can a synthetic tap fire WebLite's server-side action?
-    ///
-    /// The earlier answer ("works in the spike, not in the app") is suspect:
-    /// the probes that produced it selected cards with a bare `fbcdn` match and
-    /// acted on `cards[0]`, which under that selector is Facebook's wordmark —
-    /// a link. A tap on it navigates to Marketplace's root, which looks like
-    /// success and isn't. This uses the app's stricter `scontent` selector,
-    /// prints what it tapped, and instruments every route a navigation could
-    /// take: the delegate, history pushState, window.open, and beforeunload.
+    /// Three questions the tap finding depends on: does it repeat, is the
+    /// mobile item page extractable, and does history.back() put the feed back?
     func runTests() async {
         webView.customUserAgent = Self.mobileUA
         await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
         try? await Task.sleep(for: .seconds(15))
 
-        emit("CARDS \(await js(Self.strictCardsJS))")
-        emit("HOOKS \(await js(Self.navHookJS))")
+        for idx in [0, 1] {
+            emit("BEFORE[\(idx)] \(await js(Self.feedStateJS))")
+            emit("TAP[\(idx)] \(await js(Self.tapCard(index: idx)))")
+            try? await Task.sleep(for: .seconds(6))
+            emit("ITEM[\(idx)] \(await js(Self.mobileItemDumpJS))")
 
-        for (name, script) in Self.tapAttempts {
-            emit("TAP[\(name)] \(await js(script))")
-            try? await Task.sleep(for: .seconds(4))
-            let state = await js(Self.navStateJS)
-            let live = webView.url?.absoluteString ?? "nil"
-            emit("AFTER[\(name)] \(state) | webView.url=\(live.prefix(90))")
-            if live.contains("/marketplace/item/") {
-                emit("*** NAVIGATED TO AN ITEM PAGE via \(name) ***")
-                break
-            }
+            _ = await js("(function(){ history.back(); return 'back'; })()")
+            try? await Task.sleep(for: .seconds(6))
+            emit("BACK[\(idx)] \(await js(Self.feedStateJS))")
         }
 
-        emit("=== TAPPROBE COMPLETE ===")
+        emit("=== TAPFLOW COMPLETE ===")
     }
 
     func extractStrings(_ json: String, key: String) -> [String] {
@@ -624,6 +613,99 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         bodyLen: body.length,
         loginWall: /you must log in|log in to continue|Log In to Facebook/i.test(body)
       });
+    })()
+    """
+
+    static let feedStateJS = """
+    (function(){
+      \(strictCardFinder)
+      var cards = mpCards();
+      return JSON.stringify({
+        cards: cards.length,
+        firstLabel: cards.length ? (cards[0].img.getAttribute('alt') || '(none)').slice(0, 52) : null,
+        url: location.href.slice(0, 72)
+      });
+    })()
+    """
+
+    static func tapCard(index: Int) -> String {
+        """
+        (function(){
+          \(strictCardFinder)
+          var cards = mpCards();
+          var c = cards[\(index)];
+          if (!c) return 'no-card-at-index';
+          c.el.scrollIntoView({block: 'center'});
+          var r = c.el.getBoundingClientRect();
+          var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){
+            c.el.dispatchEvent(new MouseEvent(k, {bubbles:true, cancelable:true, composed:true, clientX:cx, clientY:cy}));
+          });
+          return 'tapped: ' + (c.img.getAttribute('alt') || '').slice(0, 46);
+        })()
+        """
+    }
+
+    /// Everything the app's extractDetail needs, read off a mobile item page.
+    /// Deliberately free of backslashes: this string crosses Python, Swift and
+    /// JS, and the previous version's regexes did not survive the trip.
+    static let mobileItemDumpJS = """
+    (function(){
+     try {
+      var body = (document.body && document.body.innerText) || '';
+      var NL = String.fromCharCode(10);
+      var lines = body.split(NL).map(function(s){ return s.trim(); })
+                      .filter(function(s){ return s.length > 0; });
+
+      function after(label) {
+        for (var i = 0; i < lines.length - 1; i++) {
+          if (lines[i].toLowerCase() === label.toLowerCase()) return lines[i + 1].slice(0, 56);
+        }
+        return null;
+      }
+
+      var seen = {}, photos = 0, imgs = document.querySelectorAll('img');
+      for (var j = 0; j < imgs.length; j++) {
+        var src = imgs[j].getAttribute('src') || '';
+        if (src.indexOf('scontent') === -1 || src.indexOf('rsrc.php') !== -1) continue;
+        var parts = src.split('/').pop().split('_');
+        var key = parts.length > 1 ? parts[1] : src;
+        if (seen[key]) continue;
+        seen[key] = 1; photos++;
+      }
+
+      var html = document.documentElement.outerHTML;
+      var coords = null, mi = html.indexOf('static_map');
+      if (mi !== -1) {
+        var chunk = html.slice(mi, mi + 220), ci = chunk.indexOf('center=');
+        if (ci !== -1) coords = chunk.slice(ci + 7, ci + 44);
+      }
+
+      var seller = null, joined = null;
+      for (var m = 0; m < lines.length; m++) {
+        if (lines[m].indexOf('Joined Facebook') === 0) {
+          joined = lines[m];
+          if (m > 0) seller = lines[m - 1];
+        }
+      }
+
+      var path = location.pathname, ix = path.indexOf('/item/');
+      return JSON.stringify({
+        itemId: ix === -1 ? null : path.slice(ix + 6).split('/')[0],
+        title: (document.title || '').slice(0, 30),
+        description: after('Description'),
+        condition: after('Condition'),
+        photos: photos,
+        seller: seller,
+        joined: joined,
+        coords: coords,
+        stopMarker: body.indexOf("Today's picks") !== -1 || body.indexOf('Related searches') !== -1,
+        loginNoise: body.toLowerCase().indexOf('scan the qr code') !== -1
+      });
+     } catch (e) {
+       return JSON.stringify({error: String(e && e.message ? e.message : e).slice(0, 110),
+                              url: location.href.slice(0, 60)});
+     }
     })()
     """
 
