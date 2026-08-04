@@ -29,9 +29,9 @@ xcrun simctl spawn <UDID> log show --last 3m --style compact \
   --predicate 'eventMessage CONTAINS "SPIKE|"' | grep -v "log run noninteractively"
 ```
 
-## Three ways the log will lie to you
+## Four ways the log will lie to you
 
-All three have cost real time. They are worth reading before you write a wait
+All four have cost real time. They are worth reading before you write a wait
 loop.
 
 **`log show` matches its own arguments.** The command line of the `log` process
@@ -45,9 +45,32 @@ printed individually quoted (`'log' 'show'`).
 stale results that look current. Either use a marker unique to this run, or poll
 for a label only this run emits.
 
+**`os.Logger` never appears at all.** The app logs through
+`Logger(subsystem:category:)`, and `log show` reads the persisted archive, which
+doesn't retain `info` level. The app looked completely silent for hours. Use
+`log stream --level info --predicate 'subsystem == "com.brianli101.marketplace"'`
+instead — streaming captures it live. This harness uses `NSLog`, which *does*
+reach `log show`, which is why the difference went unnoticed for so long.
+
 **A narrow predicate can exclude the marker you're waiting for.** Filtering on
 `CONTAINS "HIDE"` and then waiting for `CONDPROBE COMPLETE` never terminates,
 because the completion line doesn't contain `HIDE`.
+
+## Backslashes will not survive the trip
+
+A probe script written in Python, embedded in a Swift multiline string, and
+evaluated as JavaScript crosses three escaping layers. `\\s` means something
+different in each. This has produced two distinct failures: a Swift compile
+error (`invalid escape sequence in literal`), and worse, a script that compiled
+and ran but reported a bare "A JavaScript exception occurred" — hiding a result
+that was otherwise fine.
+
+Write probe scripts with **no backslashes**. `String.fromCharCode(10)` for a
+newline, `indexOf` and `charAt` in place of character-class regexes. Where a
+regex is genuinely needed, use a literal with no escapes (`/^(Details|Condition)$/i`).
+
+And wrap anything non-trivial in `try/catch` returning `String(e.message)` —
+`evaluateJavaScript` reports every failure as the same opaque sentence.
 
 ## Writing a probe
 

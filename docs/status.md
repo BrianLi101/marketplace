@@ -16,9 +16,15 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
   `aria-label` rather than its rendered text (see below).
 - **Progressive detail preview** (§3.2) — pushes on the next frame with the
   grid's data, hero image shared via `matchedGeometryEffect`, skeletons for
-  what's still loading. Never blocks on the network. Enrichment then fills in
-  the real description, condition, photo strip, and location + distance
-  (measured 4.7s and 7.6s for two listings).
+  what's still loading. Never blocks on the network.
+- **Detail enrichment** — full multi-paragraph description with its paragraph
+  breaks, photo strip, posted date, approximate coordinates, and **seller name,
+  star rating and rating count** (mobile-only). Item pages load with the
+  *mobile* UA; the id comes from tapping the card, not a desktop search.
+  Measured 2.25–3.5s end to end, down from 4.7–7.6s.
+  - Polls for content rather than sleeping a fixed 1.5s, and doesn't wait for
+    `didFinish` — on an item page that waits for every photo to download.
+  - Rejects any page whose `location.pathname` id isn't the one requested.
 - **Deep linking** — "View on Facebook" opens the listing's own
   `/marketplace/item/{id}` page. Verified against a live listing.
 - **Detail content is scoped to the listing.** Detail pages carry "Related
@@ -165,6 +171,23 @@ exactly the early warning §8 was specified for; it is working as intended.
 </details>
 
 ## Notes for testing
+
+**Read `docs/probe-checklist.md` before recording a finding.** Six rules, each
+written after a specific wrong answer this project committed to documentation
+and then acted on for weeks.
+
+**The app's own logs need `log stream`, not `log show`.** `os.Logger` at `info`
+level isn't kept in the persisted archive, so the app appears silent:
+
+```bash
+xcrun simctl spawn <UDID> log stream --level info --style compact \
+  --predicate 'subsystem == "com.brianli101.marketplace"'
+```
+
+**Driving the simulator.** Tap coordinates are device points, not screenshot
+pixels — on an iPhone 17 Pro multiply screenshot coordinates by 402/width. The
+feed's first card sits near `(103, 256)`.
+
 
 - The iOS 26 floating search bar doesn't take focus from synthetic taps; seed
   `recentSearches` via `simctl spawn <udid> defaults write` and tap a pill.
