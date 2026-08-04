@@ -38,7 +38,9 @@ Legend: **yes** · **no** · **~** partial or conditional · **?** not yet verif
 | Dimensions | — | — | yes | — | — | yes |
 | Category breadcrumb | — | — | yes | — | — | yes |
 | **Pagination past first batch** | **yes** (26→50→74→99) | **yes** | n/a | **no** (~16 cap) | **no** (~24 cap) | n/a |
+| Location settable by URL | **yes** (city slug or place id) | ~ entry point only | n/a | yes | yes | n/a |
 | `radius` URL parameter honoured | **no** (stripped) | **no** (stripped) | n/a | yes | ? | n/a |
+| `latitude`/`longitude` honoured | **no** (ignored, falls back to IP) | no | n/a | ? | ? | n/a |
 | Shipping listings mixed in | yes | yes | — | yes | yes | — |
 
 Measured from a `WKWebView` on an iPhone 17 Pro simulator, logged out, between

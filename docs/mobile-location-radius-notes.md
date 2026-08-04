@@ -12,6 +12,11 @@ everything by URL, and on this surface the URL is not where location lives.
 
 ## 1. Location is session state, not URL state
 
+> **Partly superseded — see §7.** Later testing showed city *slugs* do set
+> location on mobile search paths, and they relocate the actual result set, not
+> just the header. The session-state behaviour below still holds for the
+> browse/home feed and for in-app navigation.
+
 **Observed in normal use:** while browsing the mobile site the URL stays at
 `facebook.com/marketplace`. Location isn't expressible there — you set it
 physically in the UI, and afterwards the site shows listings near you. The
@@ -122,15 +127,57 @@ This does **not** solve feed-level distance — cards carry no coordinates — b
 it means any listing the user opens or saves can be pinned properly, and the
 detail map can show a real approximate point instead of a city centre.
 
-## 7. Open questions
+## 7. How to set location on mobile (measured 2026-08-04)
 
-- Does any spelling of the radius parameter survive on the mobile **search**
-  path specifically? Probes so far covered browse and one search URL; worth
-  ruling out completely before building local-only radius enforcement.
+Four ways of specifying location, all on the mobile surface, same query,
+logged out:
+
+| URL form | Result |
+|---|---|
+| No place segment — `/marketplace/search/?query=desk` | Resolved by **IP** and rewrote the URL to `/marketplace/sanfrancisco/search/?query=desk` |
+| `?latitude=37.3382&longitude=-121.8863` (San Jose) | **Ignored.** Stayed on San Francisco, parameters dropped |
+| `/marketplace/sanjose/search/?query=desk` | **Worked** — San Jose ×6, Santa Clara ×3, Santa Cruz ×2 |
+| `/marketplace/107929532567815/search/?query=desk` | **Worked** — South San Francisco |
+
+Three things follow:
+
+1. **City slugs are enough for most users.** `sanjose` relocated the actual
+   result set, not merely the page header. Since the app already geocodes the
+   user's city via CoreLocation, slugifying that name and putting it in the
+   path needs no picker, no id lookup and no session state.
+2. **Latitude/longitude is dead for targeting.** Facebook discards it and falls
+   back to IP. The user's coordinate is still needed locally to compute
+   distances — it just can't tell Facebook where to look.
+3. **Place ids are only needed for the tail** — places like South San Francisco
+   with no vanity alias. Usefully, a place-id page echoes its own id back in
+   the markup (`marketplace/107929532567815`) while slug pages do not, so
+   "try the slug, verify the header, fall back" is a workable strategy that
+   never touches a private endpoint.
+
+**Radius remains unsettable by URL** in every form tested — the chip stays at
+40 mi. So the split is: *location is a URL concern, radius is a database and
+client-side-filtering concern*, unless the user sets it once in Facebook's own
+picker in a visible webview.
+
+### Consequence for the app
+
+`SearchQuery` currently slugifies by lowercasing and stripping spaces, which is
+correct for `sanfrancisco` but produces `southsanfrancisco` for a place that
+has no alias. The slug should be validated against the rendered header, with a
+place-id fallback for misses.
+
+## 8. Open questions
+
+- ~~Does any spelling of the radius parameter survive on the mobile search
+  path?~~ **Answered: no.** Slug and place-id searches both render Facebook's
+  chip at the default 40 mi regardless of what is passed (§7).
 - Can the location picker be driven in a hidden webview without a login prompt?
-  If so, the app could set session location the way a user does. Note that
-  synthetic taps do **not** work on WebLite (established earlier), so this may
-  be a dead end.
+  Now **only relevant to radius**, since slugs solve location (§7). Synthetic
+  taps do not work on WebLite, so this would need a *visible* picker the user
+  taps themselves.
+- For places with no vanity alias, what is the cheapest way to obtain a place
+  id? A place-id page echoes its own id back in the markup, whereas slug pages
+  do not — so validate-then-fall-back is viable without a private endpoint.
 - Do shipping listings ever carry a city line too? If so, the "no city"
   heuristic needs the explicit "Ships" text match rather than relying on
   absence.
