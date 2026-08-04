@@ -5,9 +5,12 @@ signing in. SwiftUI renders everything the user sees; a hidden `WKWebView` is
 the data layer. Any action that needs an account — messaging, offers, saving on
 Facebook — hands off to the Facebook app via a universal link.
 
-- `app/` — the app (xcodegen: `xcodegen generate`, then build the `Marketplace` scheme)
-- `spike/` — throwaway probe harness used to answer questions against the live site
-- `docs/` — findings and decisions, listed at the bottom
+```
+apps/ios/       the app (xcodegen: `xcodegen generate`, then build the Marketplace scheme)
+apps/backend/   placeholder — runtime not chosen yet, see its README
+tools/probe/    harness for measuring the live site; every finding below came from it
+docs/           findings and decisions, listed at the bottom
+```
 
 ---
 

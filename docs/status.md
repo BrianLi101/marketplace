@@ -1,7 +1,7 @@
 # Build status — 2026-07-31
 
-App lives in `app/` (xcodegen; `xcodegen generate` then build the `Marketplace`
-scheme). Throwaway probe harness in `spike/`. Feasibility record in
+App lives in `apps/ios/` (xcodegen; `xcodegen generate` then build the
+`Marketplace` scheme). Probe harness in `tools/probe/`, with its own README. Feasibility record in
 `feasibility-2026-07-31.md`. Which Facebook surface to route through, and why —
 including the desktop login modal — is analysed in `surface-strategy.md`.
 How the mobile site handles location, radius and result quality (and why the
@@ -11,8 +11,9 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
 
 - **Category feeds** — 49 DOM cards → 48 parsed, with title, price, badge,
   **city**, and **approximate distance**.
-- **Search feeds** — 27 cards → 26 parsed (title, price, badge; no location,
-  see below).
+- **Search feeds** — 27 cards → 26 parsed, with **untruncated title**, price,
+  badge, **city**, **distance**, and **condition**, all read from each card's
+  `aria-label` rather than its rendered text (see below).
 - **Progressive detail preview** (§3.2) — pushes on the next frame with the
   grid's data, hero image shared via `matchedGeometryEffect`, skeletons for
   what's still loading. Never blocks on the network. Enrichment then fills in

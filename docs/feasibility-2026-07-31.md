@@ -37,7 +37,7 @@ logged-out thesis fails on desktop web.
 ## Addendum: WKWebView spike on iOS Simulator (same day)
 
 Ran the real transport — `WKWebView`, `nonPersistent()` store, iPhone 17 Pro
-simulator (`spike/` in this repo). UA matrix, cookies cleared between runs,
+simulator (`tools/probe/` in this repo). UA matrix, cookies cleared between runs,
 same search URL, 5 scroll rounds each:
 
 | UA | Result |
