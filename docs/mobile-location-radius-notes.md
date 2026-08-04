@@ -103,7 +103,26 @@ signals, in rough order of reliability:
    `surface-strategy.md` §"how they're doing it") — they just can't be relied
    on to persist through in-app navigation.
 
-## 6. Open questions
+## 6. Per-listing coordinates (added 2026-08-04)
+
+Item pages — and only item pages — publish an approximate coordinate for the
+listing. Both surfaces carry the same value:
+
+- **Web:** embedded JSON, `"latitude":37.735290527344,"longitude":-122.39318847656`
+- **Mobile:** the same pair in a static map image URL,
+  `static_map.php?…&center=37.735290527344%2C-122.39318847656&zoom=11`
+
+Identical across surfaces for the same listing, so it is Facebook's published
+approximate point, not anything derived on the client. It's deliberately
+imprecise ("Location is approximate"), but materially better than a city
+centroid: the sample listing sits ~4.5 km from the San Francisco centroid the
+app currently geocodes to.
+
+This does **not** solve feed-level distance — cards carry no coordinates — but
+it means any listing the user opens or saves can be pinned properly, and the
+detail map can show a real approximate point instead of a city centre.
+
+## 7. Open questions
 
 - Does any spelling of the radius parameter survive on the mobile **search**
   path specifically? Probes so far covered browse and one search URL; worth

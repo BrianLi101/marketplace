@@ -75,11 +75,39 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     // MARK: - Test sequence
 
+    static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"
+
     func runTests() async {
+        // 1. Get a live item id from the desktop search surface.
+        webView.customUserAgent = Self.desktopUA
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(12))
+        let idJSON = await js("""
+        (function(){
+          var a = document.querySelector('a[href*="/marketplace/item/"]');
+          var m = a ? (a.getAttribute('href')||'').match(/marketplace\\/item\\/(\\d+)/) : null;
+          return JSON.stringify({id: m ? m[1] : null});
+        })()
+        """)
+        guard let id = extract(idJSON, key: "id"), id != "<null>" else {
+            emit("no item id found"); emit("=== DONE ==="); return
+        }
+        let itemURL = "https://www.facebook.com/marketplace/item/\(id)/"
+        emit("item: \(itemURL)")
+
+        // 2. Same item page, both surfaces.
+        emit("--- DESKTOP item page ---")
+        await load(itemURL)
+        try? await Task.sleep(for: .seconds(12))
+        emit("desktop: \(await js(Self.fieldDumpJS))")
+
+        emit("--- MOBILE item page ---")
         webView.customUserAgent = Self.mobileUA
-        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium")
-        try? await Task.sleep(for: .seconds(16))
-        emit("mobileIDs: \(await js(Self.mobileIDHuntJS))")
+        await clearCookies()
+        await load(itemURL)
+        try? await Task.sleep(for: .seconds(15))
+        emit("mobile: \(await js(Self.fieldDumpJS))")
+
         emit("=== DONE ===")
     }
 
@@ -282,6 +310,58 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         listingPhrases: listingPhrases,
         distinctLongNumbers: Object.keys(longNums).length,
         ua: navigator.userAgent.slice(0, 40)
+      });
+    })()
+    """
+
+    /// What fields does an item page actually expose, and is there anything
+    /// more precise than a city name (a map tile, coordinates, a neighbourhood)?
+    static let fieldDumpJS = """
+    (function(){
+      var body = document.body.innerText || '';
+      var html = document.documentElement.outerHTML;
+
+      var photos = Array.prototype.slice.call(document.querySelectorAll('img')).filter(function(i){
+        return (i.getAttribute('src') || '').indexOf('scontent') !== -1;
+      });
+
+      // Any map imagery? Static map tiles usually carry coordinates in the URL.
+      var mapImgs = Array.prototype.slice.call(document.querySelectorAll('img')).filter(function(i){
+        var s = (i.getAttribute('src') || '').toLowerCase();
+        return s.indexOf('map') !== -1 || s.indexOf('tile') !== -1 || s.indexOf('static') !== -1 && s.indexOf('lat') !== -1;
+      }).map(function(i){ return (i.getAttribute('src') || '').slice(0, 140); });
+
+      // Coordinate-shaped pairs anywhere in the markup.
+      var coordPairs = (html.match(/-?\\d{1,3}\\.\\d{4,},\\s*-?\\d{1,3}\\.\\d{4,}/g) || []).slice(0, 4);
+      var latKeys = (html.match(/"(latitude|longitude|lat|lng)":\\s*-?\\d+\\.\\d+/g) || []).slice(0, 6);
+
+      // Seller block
+      var sellerHeading = /Seller information|Seller details|About the seller/i.test(body);
+      var rating = (body.match(/\\d\\.\\d\\s*\\(\\d+\\)|Rating:\\s*\\d\\.\\d/) || [])[0] || null;
+      var joined = (body.match(/Joined Facebook[^\\n]{0,30}/i) || [])[0] || null;
+
+      function has(re) { return re.test(body); }
+      return JSON.stringify({
+        ua: navigator.userAgent.indexOf('iPhone') !== -1 ? 'mobile' : 'desktop',
+        title: (document.title || '').slice(0, 50),
+        price: (body.match(/\\$[\\d,]+/) || [])[0] || null,
+        condition: (body.match(/Condition\\s*\\n*([^\\n]{1,30})/i) || [])[1] || null,
+        hasDescription: has(/Description/i),
+        photos: photos.length,
+        posted: (body.match(/Listed[^\\n]{0,40}/i) || [])[0] || null,
+        cityText: (body.match(/[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}/) || [])[0] || null,
+        approximateNote: has(/Location is approximate/i),
+        sellerHeading: sellerHeading,
+        sellerRating: rating,
+        sellerJoined: joined,
+        mapImages: mapImgs.length,
+        mapImageSample: mapImgs[0] || null,
+        coordPairs: coordPairs,
+        latLngKeys: latKeys,
+        shipping: (body.match(/Ships (for|to)[^\\n]{0,20}/i) || [])[0] || null,
+        dimensions: has(/Estimated \\(WxDxH\\)/i),
+        category: (body.match(/Marketplace\\s*›?\\s*([A-Za-z &]{3,30})/) || [])[1] || null,
+        loginWall: has(/you must log in|log into facebook to continue/i)
       });
     })()
     """
