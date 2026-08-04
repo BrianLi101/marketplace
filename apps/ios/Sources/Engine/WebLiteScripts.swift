@@ -224,24 +224,36 @@ enum WebLiteScripts {
       // Descriptions run to several paragraphs. `after` captures one line of at
       // most 120 characters, so everything past the first line was silently
       // dropped. Collect every line until the next labelled section instead.
-      var _dlines = mainText.split(String.fromCharCode(10))
-                            .map(function(s){ return s.trim(); })
-                            .filter(function(s){ return s.length > 0; });
-      var _BOUNDARY = /^(Details|Condition|Location|Seller information|Seller details|About the seller|Message|Save|Share|More|Send|Alert|Related searches)$/i;
+      // Paragraph breaks never reach mainText: the walk skips whitespace-only
+      // nodes, so a blank line between paragraphs is gone before extraction and
+      // the description renders as one collapsed wall of text. innerText keeps
+      // them, and excludes script/style natively rather than by guard.
+      var _bodyLines = (document.body.innerText || '').split(String.fromCharCode(10));
+      var _BOUNDARY = /^(Details|Condition|Location|Seller information|Seller details|About the seller|Message|Save|Share|More|Send|Alert|Related searches|Today's picks)$/i;
       function textAfter(label) {
         var out = [], started = false;
-        for (var _k = 0; _k < _dlines.length; _k++) {
-          var _ln = _dlines[_k];
+        for (var _k = 0; _k < _bodyLines.length; _k++) {
+          var _ln = _bodyLines[_k].trim();
           if (!started) {
             if (_ln.toLowerCase() === label.toLowerCase()) started = true;
             continue;
           }
-          if (_BOUNDARY.test(_ln)) break;
-          if (_ln.indexOf('Listed ') === 0) break;
+          if (_ln.length > 0) {
+            if (_BOUNDARY.test(_ln)) break;
+            if (_ln.indexOf('Listed ') === 0) break;
+          }
           out.push(_ln);
-          if (out.length >= 40) break;
+          if (out.length >= 60) break;
         }
-        return out.length ? out.join(String.fromCharCode(10)) : null;
+        while (out.length > 0 && out[0] === '') out.shift();
+        while (out.length > 0 && out[out.length - 1] === '') out.pop();
+        // One blank line between paragraphs, never a run of them.
+        var kept = [];
+        for (var _m = 0; _m < out.length; _m++) {
+          if (out[_m] === '' && kept.length > 0 && kept[kept.length - 1] === '') continue;
+          kept.push(out[_m]);
+        }
+        return kept.length > 0 ? kept.join(String.fromCharCode(10)) : null;
       }
 
       function after(label) {
