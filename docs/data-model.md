@@ -1,4 +1,4 @@
-# Data model — draft v0.1
+# Data model — draft v0.2
 
 What we'd store to accumulate listings across devices, so a feed card that
 arrives knowing almost nothing can be enriched from what somebody else's phone
@@ -6,8 +6,11 @@ already learned.
 
 Status: **proposal, nothing built.** Written against Postgres because concrete
 DDL argues better than prose; the Convex mapping is at the bottom and the model
-survives either choice. Expect this file to change as we verify the open
-questions at the end.
+survives either choice.
+
+Changed since v0.1: the general-purpose observation log is gone from the core
+model, replaced by a narrow price/status series. Search sightings are now a
+write path, with explicit and deliberately narrow permissions.
 
 ---
 
@@ -21,29 +24,95 @@ card is. The photo FBID, pulled from the middle segment of the fbcdn filename,
 is the only stable thing a card has, and it joins across surfaces (9 verified
 joins, mobile ↔ web).
 
-So `cover_photo_fbid` is the primary natural key, and `fb_listing_id` is a
-*nullable enrichment* we get later, if ever. That inverts the obvious design and
-it's the reason the rest of this looks the way it does.
+So `cover_photo_fbid` is the primary natural key and carries a `UNIQUE`
+constraint. `fb_listing_id` is a *nullable enrichment* we get later, if ever.
+That inverts the obvious design, and it's why the rest of this looks the way it
+does.
 
-Two things must be verified before building on it — both in the open questions
-below: that a feed card's photo is always the item page's *first* photo, and
-that a photo FBID is never reused across two listings.
+We're assuming a photo FBID is never reused across two listings. One thing
+still needs verifying: that a feed card's photo is always the item page's
+*first* photo. See open questions.
+
+---
+
+## How data gets in
+
+Two write paths, with very different privileges.
+
+**Detail open** — the user taps a listing, we load its item page. This is the
+authoritative path. It can write every field, and it sets `detail_fetched_at`.
+
+**Search sighting** — cards observed while scrolling a feed, batched and sent
+fire-and-forget, one request per feed page. It creates rows for listings nobody
+has opened yet, and it monitors the two fields that actually change. It is
+sharply limited in what it may touch.
+
+The governing rule, which every write must satisfy:
+
+> **A sighting can never reduce what we know.**
+
+Concretely:
+
+| Field group | Search sighting | Detail open |
+|---|---|---|
+| `last_seen_at` | write | write |
+| `price_minor`, `status` | **write** — these are what it's for | write |
+| Append to `listing_changes` | write | write |
+| `city`, `title` | fill only if `NULL` | write |
+| Description, photos, condition, dimensions | **never** | write |
+| Seller name, rating, joined | **never** | write |
+| `fb_listing_id` | **never** — cards have none | write when observed |
+| `detail_fetched_at` | **never** | set |
+| Row creation | yes, skeletal | yes |
+
+A row created by a sighting has `detail_fetched_at IS NULL`. That flag is
+load-bearing in three places: the UI knows not to promise details it doesn't
+have, enrichment lookups can distinguish "never heard of this" from "seen it,
+know nothing about it", and it doubles as a work queue.
+
+The invariant is enforced in the statement itself rather than in application
+logic, so it can't be forgotten:
+
+```sql
+-- SIGHTING: volatile fields overwrite, descriptive fields only fill nulls,
+-- and the columns that must never regress simply aren't in the SET list.
+INSERT INTO listings (id, cover_photo_fbid, title, title_truncated,
+                      price_minor, price_currency, status, city,
+                      first_seen_at, last_seen_at)
+VALUES (…)
+ON CONFLICT (cover_photo_fbid) DO UPDATE SET
+  last_seen_at = EXCLUDED.last_seen_at,
+  price_minor  = EXCLUDED.price_minor,
+  status       = EXCLUDED.status,
+  title        = COALESCE(listings.title, EXCLUDED.title),
+  city         = COALESCE(listings.city, EXCLUDED.city),
+  updated_at   = now();
+
+-- DETAIL OPEN: everything, unconditionally.
+INSERT INTO listings (…) VALUES (…)
+ON CONFLICT (cover_photo_fbid) DO UPDATE SET
+  title = EXCLUDED.title, description = EXCLUDED.description,
+  condition = EXCLUDED.condition, seller_name = EXCLUDED.seller_name,
+  fb_listing_id = COALESCE(EXCLUDED.fb_listing_id, listings.fb_listing_id),
+  detail_fetched_at = EXCLUDED.detail_fetched_at,
+  …;
+```
+
+Note `title` on the sighting path: a card title is truncated, so it's only ever
+a placeholder for a row that has no title at all. `title_truncated` records
+which kind we're holding, and the detail path always replaces it.
 
 ---
 
 ## Tables
 
-### `listings` — consensus, not observation
-
-One row per listing we believe exists. Every field here is our current *best
-belief*, derived from the observation log rather than written directly.
+### `listings`
 
 ```sql
 CREATE TABLE listings (
   id                    uuid PRIMARY KEY,          -- UUIDv7
   cover_photo_fbid      text NOT NULL UNIQUE,      -- natural key; see above
 
-  -- Facebook's own id, when we manage to get one
   fb_listing_id         text UNIQUE,
   fb_listing_id_source  text,                      -- 'observed' | 'matched'
   fb_listing_id_conf    real,                      -- 0..1, only for 'matched'
@@ -51,16 +120,19 @@ CREATE TABLE listings (
   title                 text,
   title_truncated       bool NOT NULL DEFAULT false,
   description           text,
-  condition             text,                      -- 'new' | 'used_like_new' | …
-  dimensions            text,                      -- free-form, as published
+  condition             text,
+  dimensions            text,
+  category_path         text[],                    -- ordered breadcrumb
 
   price_minor           bigint,                    -- integer minor units
-  price_currency        char(3),                   -- ISO 4217
-  was_price_minor       bigint,                    -- strikethrough price
-  delivery              text,                      -- 'local' | 'shipping' | 'both'
+  price_currency        char(3),
+  was_price_minor       bigint,
+  price_changed_at      timestamptz,               -- derived cache
+  delivery              text,                      -- 'local'|'shipping'|'both'
 
   status                text NOT NULL DEFAULT 'unknown',
-  status_raw            text,                      -- exactly what FB said
+  status_raw            text,
+  status_changed_at     timestamptz,               -- derived cache
 
   city                  text,
   region                text,
@@ -72,16 +144,16 @@ CREATE TABLE listings (
   seller_name           text,                      -- first name only; FB redacts
   seller_rating         real,
   seller_rating_count   int,
-  seller_joined_raw     text,                      -- "Joined Facebook in 2011"
+  seller_joined_raw     text,
 
   listed_at_raw         text,                      -- "Listed 5 weeks ago"
   listed_at_est         timestamptz,
-  listed_at_precision   text,                      -- 'day' | 'week' | 'month'
+  listed_at_precision   text,                      -- 'day'|'week'|'month'
 
-  first_seen_at         timestamptz NOT NULL,      -- earliest device observation
+  first_seen_at         timestamptz NOT NULL,      -- first sighting or open
   last_seen_at          timestamptz NOT NULL,
-  sold_first_seen_at    timestamptz,
-  observation_count     int NOT NULL DEFAULT 0,
+  detail_fetched_at     timestamptz,               -- NULL = skeletal row
+  detail_surface        text,                      -- 'mobile'|'web'|'both'
 
   created_at            timestamptz NOT NULL DEFAULT now(),
   updated_at            timestamptz NOT NULL DEFAULT now()
@@ -90,55 +162,58 @@ CREATE TABLE listings (
 CREATE INDEX ON listings (fb_listing_id);
 CREATE INDEX ON listings (approx_lat, approx_lon);
 CREATE INDEX ON listings (status, last_seen_at);
+CREATE INDEX ON listings (detail_fetched_at) WHERE detail_fetched_at IS NULL;
 ```
 
-### `listing_observations` — append-only claims
+`price_changed_at` and `status_changed_at` are denormalised from
+`listing_changes` so that rendering a feed never joins it. They're caches, not
+the record.
 
-Every field a device extracted, on one page load, with provenance. Never
-updated, never deleted except by retention.
+### `listing_changes`
+
+The price and status series. One row per observation where either value
+differed from what we held, plus a seed row when the listing is first recorded.
 
 ```sql
-CREATE TABLE listing_observations (
-  id                uuid PRIMARY KEY,              -- UUIDv7
-  listing_id        uuid NOT NULL REFERENCES listings(id),
-  cover_photo_fbid  text NOT NULL,
+CREATE TABLE listing_changes (
+  id              uuid PRIMARY KEY,                -- UUIDv7
+  listing_id      uuid NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
 
-  observed_at       timestamptz NOT NULL,          -- device clock, untrusted
-  received_at       timestamptz NOT NULL DEFAULT now(),
-  device_id         uuid NOT NULL,
-  app_version       text,
+  observed_at     timestamptz NOT NULL,            -- device clock, untrusted
+  recorded_at     timestamptz NOT NULL DEFAULT now(),
 
-  surface           text NOT NULL,                 -- 'mobile' | 'web'
-  page_type         text NOT NULL,                 -- 'search' | 'browse' | 'item'
-  layout_variant    text,                          -- which lottery draw
+  price_minor     bigint,
+  price_currency  char(3),
+  status          text NOT NULL,
+  status_raw      text,
 
-  -- the claimed payload; all nullable, shape mirrors `listings`
-  fb_listing_id     text,
-  title             text,
-  price_minor       bigint,
-  status_raw        text,
-  approx_lat        double precision,
-  approx_lon        double precision,
-  seller_name       text,
-  -- …
-
-  raw               jsonb NOT NULL                 -- everything, verbatim
+  changed         text[] NOT NULL,                 -- {initial}|{price}|{status}|{price,status}
+  source_surface  text NOT NULL,                   -- 'mobile'|'web'
+  source_page     text NOT NULL,                   -- 'search'|'browse'|'item'
+  device_id       uuid
 );
 
-CREATE INDEX ON listing_observations (listing_id, observed_at DESC);
-CREATE INDEX ON listing_observations (device_id, received_at DESC);
+CREATE INDEX ON listing_changes (listing_id, observed_at DESC);
+CREATE INDEX ON listing_changes (observed_at DESC) WHERE 'price' = ANY(changed);
 ```
 
-`raw` matters more than it looks. Our extraction logic has changed repeatedly
-and will again — keeping the source payload means we can re-derive fields
-retroactively instead of needing users to revisit listings.
+Each row is a **snapshot of both fields**, not a `(field, old, new)` triple.
+That keeps prices as `bigint` rather than coercing to text, records a
+simultaneous price-and-status change as one row, and makes "price over time" a
+plain column select. The `changed` array turns "recent price drops" into an
+index scan instead of a self-join against the preceding row.
+
+Most rows will come from sightings rather than detail opens, which is the point
+— taps happen once per listing, scrolls repeat. The app restoring the last
+search on launch means every cold start re-observes a feed, which is a
+repeat-observation engine we get for free.
 
 ### `listing_media`
 
 ```sql
 CREATE TABLE listing_media (
   id             uuid PRIMARY KEY,
-  listing_id     uuid NOT NULL REFERENCES listings(id),
+  listing_id     uuid NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
   fb_photo_id    text NOT NULL,
   kind           text NOT NULL DEFAULT 'photo',    -- 'photo' | 'video'
   position       int,                              -- 0 = cover
@@ -150,9 +225,9 @@ CREATE TABLE listing_media (
 );
 ```
 
-You were right to want this separate. Item pages carry 24–29 photos; that's not
-an array column. Note `last_url` is nearly worthless long-term — fbcdn URLs are
-signed and expire. The FBID is the durable part.
+Written only by the detail path — item pages carry 24–29 photos, cards carry
+one. `last_url` is nearly worthless long-term because fbcdn URLs are signed and
+expire; the FBID is the durable part.
 
 ### `sellers` — inferred, low confidence
 
@@ -170,11 +245,11 @@ CREATE TABLE sellers (
 );
 ```
 
-Flagging this hard: **there is no stable seller ID on Facebook's side.** The
-avatar is a shared placeholder — byte-identical PNG for two different sellers,
-verified. So this table is a guess, built by clustering on `(seller_name,
-approx_lat, approx_lon)`, and it will produce both false merges and false
-splits. Build it only when the "more from this seller" feature is actually next.
+**There is no stable seller ID on Facebook's side.** The avatar is a shared
+placeholder — byte-identical PNG for two different sellers, verified. This table
+is a guess built by clustering on `(seller_name, approx_lat, approx_lon)`, and
+it will produce both false merges and false splits. Build it when "more from
+this seller" is actually the next feature, not before.
 
 ### `devices`
 
@@ -188,96 +263,67 @@ CREATE TABLE devices (
 );
 ```
 
-This exists for abuse control and quorum de-duplication, not analytics. It must
-be a **random UUID generated on first launch and stored locally** — not
-`identifierForVendor`, not an advertising ID, and the user should be able to
-reset it. Anything device-derived turns an anonymous listing database into a
-tracking substrate, which is the opposite of the app's whole posture.
+For abuse control and de-duplication, not analytics. Must be a **random UUID
+generated on first launch and stored locally** — not `identifierForVendor`, not
+an advertising ID, and resettable by the user. Anything device-derived turns an
+anonymous listing database into a tracking substrate, which is the opposite of
+this app's posture.
 
 ---
 
-## Where I'm pushing back
+## The two item surfaces still disagree
 
-**Observations belong in their own table, not as columns on the listing.**
-This is the big one. You described `last_updated_at`, `updated_by_device_id`,
-and an update source as listing fields — but the surfaces disagree with each
-other in ways that make a single mutable row lossy. Mobile search titles are
-truncated and web search titles aren't; only mobile item pages have a seller
-name; only item pages have coordinates. If a mobile card overwrites a good web
-title, we've destroyed data we already paid for. `ListingStore.fillGaps` already
-fights exactly this locally.
+The detail path is authoritative, but "the detail path" is two different pages:
 
-Splitting it buys three things nearly free: price history, "when did we first
-see it sold" (`min(observed_at) WHERE status='sold'` — you asked for this
-directly), and the quorum defence against forged writes, which needs multiple
-independent claims to compare anyway.
+| | mobile item | web item |
+|---|---|---|
+| Seller name / rating / joined | **yes** | no |
+| Listing ID | no | **yes** |
+| Condition | ? unverified | **yes** |
+| Coordinates, description, photos | yes | yes |
 
-**`status` should be an enum *and* a raw string.** You wanted to avoid an enum
-for language reasons — I'd do both instead. Normalise to
-`listed | pending | sold | removed | unknown`, and keep `status_raw` as whatever
-Facebook literally said. Unrecognised strings land in `unknown` and accumulate
-in `status_raw`, which gives us a corpus to expand the mapping from. Avoiding
-the enum entirely means every query does string matching against text in
-languages we haven't seen.
+`DetailEngine` currently uses the desktop UA, so today's flow gets condition and
+the listing ID and **no seller data at all** — and seller rating is the
+"highly rated seller" signal we want. So the write path needs either a second
+page load against mobile, or a decision to defer seller data.
 
-**Price as integer minor units plus a currency code.** Not a float, not the
-formatted string. Also worth capturing `was_price` — the strikethrough is
-already in the DOM and price drops are exactly the signal a "watch this" feature
-would want.
+Open question 3 settles it: if condition exists on mobile item pages, mobile
+alone covers everything except the listing ID, which we resolve separately
+anyway.
 
-**Category is a breadcrumb, not tags.** Item pages give an ordered hierarchy
-("Plants & Seeds", "Desks"), which is different from a free-form tag set. I'd
-store the raw path and normalise separately, rather than flattening both into
-one array and losing the ordering.
-
-**`created_at` and `first_seen_at` are worth keeping separate, but not for the
-reason given.** In the normal case they're the same instant — we create the row
-the moment a device first reports it. The real distinction is that
-`first_seen_at` comes from the *device's* clock and can precede `created_at` if
-a device batches uploads or was offline, and device clocks are attacker-
-controlled. So: `first_seen_at` for product logic, `created_at` for anything
-that needs to be monotonic and trustworthy.
+Where both surfaces are loaded, the merge rule is: fill nulls, never overwrite a
+non-null with a null. Coordinates are byte-identical across surfaces, so there
+is nothing to reconcile. `detail_surface` records which page(s) fed the row.
 
 ---
 
-## Answers to the questions you raised
+## Decisions and their consequences
 
-**Can we see when Facebook actually created the listing?** Yes, approximately.
-Item pages on both surfaces carry relative text — "Listed 5 weeks ago", "Listed
-over a week ago". That's coarse and it's item-page-only, so it never appears on
-feed cards. Hence three columns: the raw string, a derived timestamp, and the
-precision of that derivation, so nothing downstream mistakes ±3 days for a real
-timestamp.
+**Sold status is demand-driven.** It's detected by reloading the item page for
+listings a user saved, so it's only reliable for listings somebody cared enough
+to save. For everything else we know staleness, not sold. `status` must not be
+presented as trustworthy across the whole corpus.
 
-**Should we store when we first saw it sold?** Yes — and with an observation log
-it's free rather than a column to maintain. But note it's *first observed sold*,
-not *sold at*. We only find out when somebody happens to revisit the listing.
+**Staleness is not sold.** A listing we stop seeing might be delisted, or nobody
+searched that term lately. Three states: actively seen, stale (no sighting in N
+days), confirmed sold. Only the third is a fact, and only via the above.
 
-**Should lat/long be stored directly?** Yes, two `double precision` columns,
-**stored exactly as observed** — all twelve decimal places, no rounding. That
-precision is spurious as geography (Facebook fuzzes it, and labels it "Location
-is approximate"), but it's load-bearing as an *identifier*: both of Trevor's
-listings carry byte-identical coordinates, `37.762756347656,-122.49206542969`,
-while a control seller sat 9.2 km away. Rounding for tidiness would destroy the
-only seller-clustering signal we have. Store exact, display fuzzy.
+**Facebook's own listing date is coarse.** Item pages carry relative text —
+"Listed 5 weeks ago", "Listed over a week ago". Never on cards. Hence three
+columns: raw string, derived timestamp, and the precision of the derivation, so
+nothing downstream mistakes ±3 days for a real timestamp.
 
----
+**Coordinates are stored exactly as observed**, all twelve decimal places, no
+rounding. That precision is spurious as geography — Facebook fuzzes it and
+labels it "Location is approximate" — but load-bearing as an *identifier*: both
+of one seller's listings carry byte-identical coordinates,
+`37.762756347656,-122.49206542969`, while a control seller sat 9.2 km away.
+Rounding for tidiness would destroy the only seller-clustering signal we have.
+Store exact, display fuzzy.
 
-## Things the model needs that weren't on your list
-
-- **`delivery`** — shipping listings are mixed into both surfaces and you've
-  said they're mostly not what users want. Needs to be a filterable field, not
-  something we infer from a price string at render time.
-- **`layout_variant` on observations** — records which draw of the layout
-  lottery produced a claim. It explains why city is missing from a whole class
-  of observations, and it's how we'd notice if the variant distribution shifts.
-- **Staleness as distinct from sold.** A listing we stop seeing isn't sold — it
-  might be delisted, or nobody's searched that term lately. Three states:
-  actively seen, stale (no observation in N days), confirmed sold. Only the
-  third is a fact.
-- **Retention.** Listings rot fast and a sold couch is worse than no couch. A
-  TTL on observations and a staleness sweep on listings should be in the model
-  from the start rather than retrofitted.
+**Retention.** Listings rot fast and a sold couch is worse than no couch. A
+staleness sweep and a TTL on `listing_changes` belong in the model from the
+start rather than retrofitted.
 
 ---
 
@@ -285,17 +331,18 @@ only seller-clustering signal we have. Store exact, display fuzzy.
 
 Ordered by how much damage a wrong guess does.
 
-1. **Is a feed card's photo always the item page's first photo?** The whole
+1. **Is a feed card's photo always the item page's first photo?** The entire
    identity model depends on it. Cheap to test: resolve a card to its item page
    and compare the card's FBID against photo 0.
-2. **Is a photo FBID ever reused across listings?** If a seller relists, do we
-   get a new FBID or the old one? Determines whether `UNIQUE` on
-   `cover_photo_fbid` is correct or actively harmful.
-3. **How does a sold listing present?** Does it show a "Sold" badge, 404, or
-   just quietly leave search results? If it's the third, `status = 'sold'` is
-   largely unobservable and we're really modelling staleness.
-4. **Is `condition` on mobile item pages?** Still the `?` in the README matrix.
-   Decides whether one surface can serve a complete detail record.
+2. **Can a card's price differ from the item page's?** Shipping-inclusive
+   pricing or promotional display would mean sightings write prices that
+   disagree with reality and manufacture phantom `listing_changes` rows.
+3. **Is `condition` on mobile item pages?** Still the `?` in the README matrix.
+   Decides whether one surface can serve a complete detail record, and therefore
+   whether we need two page loads per open.
+4. **How does a sold listing present on its item page?** We've decided *where*
+   to detect it; we haven't verified *what* it looks like. Badge, banner,
+   redirect, 404?
 5. **Do listings ever contain video?** Unverified — `kind` is modelled for it
    speculatively.
 6. **Can an image URL be rebuilt from an FBID?** If not, cached images need
@@ -304,16 +351,41 @@ Ordered by how much damage a wrong guess does.
 
 ---
 
+## When this stops being enough
+
+Two things were in v0.1 and were cut deliberately. Recording why, so the
+reasoning survives:
+
+**A general observation log.** Every extracted field from every page load, with
+provenance, resolved into the listing row by per-field precedence rules. It was
+motivated by surfaces contradicting each other — truncated card titles clobbering
+good ones. Restricting sightings to volatile fields solves that far more cheaply.
+Reach for the log if we ever need per-field provenance ("where did this title
+come from?") or retroactive re-extraction when the parser improves.
+
+**Quorum on writes.** With one mutable row, writes are last-writer-wins, so
+anyone who extracts the endpoint from the binary can rewrite listings. Fine at
+current scale; not fine at public scale. The catch is that it isn't
+retroactively addable — deciding you need it in six months means needing claim
+history you didn't record. `listing_changes` preserves a partial trail for the
+two fields most worth attacking (price and status), which covers the most likely
+abuse. If broader coverage matters, a write-only append log alongside each
+upsert — never read, never joined — is cheap insurance.
+
+---
+
 ## If we go with Convex instead
 
-The model survives, with three changes. `listings` and `listing_observations`
-become documents with a `by_photo` index on `cover_photo_fbid`; the consensus
-recompute becomes a mutation, which is transactional by default and therefore
-simpler than the Postgres version. `listing_media` can stay a table or collapse
-into an array field on the listing, since it's never queried independently. And
-every ID field must be `v.string()` rather than `v.number()` — Convex numbers
-are Float64 and Facebook's IDs are 16 digits, which is close enough to the
-2^53 exact-integer ceiling that betting on it is unnecessary risk.
+The model survives, with three changes. `listings` and `listing_changes` become
+documents with a `by_photo` index on `cover_photo_fbid`; the sighting upsert
+becomes a mutation, which is transactional by default and expresses the
+never-regress rule in plain TypeScript rather than a careful `ON CONFLICT`
+clause. `listing_media` can collapse into an array field, since it's never
+queried independently.
 
-The geo index would be the geospatial component (beta, bounding-box queries),
-rather than PostGIS.
+Every ID field must be `v.string()` rather than `v.number()` — Convex numbers
+are Float64 and Facebook's IDs are 16 digits, close enough to the 2^53
+exact-integer ceiling that betting on it is unnecessary risk.
+
+Geo would be the geospatial component (beta, bounding-box queries) rather than
+PostGIS.
