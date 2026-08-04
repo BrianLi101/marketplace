@@ -21,15 +21,15 @@ Legend: **yes** · **no** · **~** partial or conditional · **?** not yet verif
 | | Mobile search | Mobile browse | Mobile item | Web search | Web browse | Web item |
 |---|---|---|---|---|---|---|
 | **Listing ID** | no | no | n/a | **yes** | **yes** | n/a |
-| Title | ~ truncated | ~ truncated | yes | **yes** untruncated | yes | yes |
+| Title | **yes** untruncated (aria) | ~ truncated | yes | **yes** untruncated | yes | yes |
 | Price | yes | yes | yes | yes | yes | yes |
 | Was-price (strikethrough) | yes | yes | yes | yes | yes | yes |
 | Badge ("Price drop") | yes | yes | — | ? | ? | — |
-| City ("San Francisco, CA") | ~ variant-dependent | yes | yes | yes | yes | yes |
+| City ("San Francisco, CA") | **yes** (aria) | yes | yes | yes | yes | yes |
 | **Approximate coordinates** | no | no | **yes** (map URL) | no | no | **yes** (JSON) |
 | "Location is approximate" note | — | — | no | — | — | yes |
 | Description | — | — | yes (labelled) | — | — | ~ present, unlabelled |
-| Condition | — | — | ~ layout-dependent | — | — | **yes** |
+| Condition | **yes** (aria) | ? | ~ layout-dependent | — | — | **yes** |
 | Posted ("Listed 5 weeks ago") | — | — | yes | — | — | yes |
 | Photos (full set) | — | — | yes (24) | — | — | yes (29) |
 | **Seller name** | — | — | **yes** | — | — | **no** |
@@ -82,7 +82,43 @@ card-level distance still has to come from geocoding the city name.
 **Seller identity is mobile-only.** The mobile item page shows a seller name,
 join date, and rating where present; the web item page shows none of it.
 
-**Condition is web-only in practice.** Mobile item pages come in two layouts,
+**Mobile search cards carry everything in an `aria-label`.** The visible text
+of a card is only a price and a truncated title, but every card labels itself:
+
+```
+Desk for sale - Used - Good - $75 in Oakland, CA
+Free Computer desk for sale - Used - Like New in El Sobrante, CA
+```
+
+Measured 2026-08-04: **27 of 27 cards** carry one, on both search layouts, and
+every card that is actually a listing parses. Two shapes — priced listings put
+the price between condition and `in`; free listings prefix `Free ` to the title
+and omit the price segment entirely. The only non-parsing label is the Facebook
+logo, which isn't a listing and is already excluded by the `scontent` guard.
+
+That single attribute supplies the **untruncated title**, the **city**, and the
+**condition**, none of which are in the rendered text. Conditions observed form
+a clean set: `New`, `Used - Like New`, `Used - Good`, `Used - Fair`.
+
+**The search layout is decided by the URL, not by chance.** Requesting a place
+that differs from the IP-inferred one yields the layout with a city printed on
+every card; requesting the place you already appear to be in yields the one
+without. Eight search observations, no exceptions:
+
+| requested | IP says | layout |
+|---|---|---|
+| no place segment | San Francisco | no per-card city |
+| `?latitude=&longitude=` (ignored) | San Francisco | no per-card city |
+| `/sanfrancisco/` ×4 | San Francisco | no per-card city |
+| `/sanjose/` | San Francisco | **city on every card** |
+| `/oakland/` | San Francisco | **city on every card** |
+| `/107929532567815/` (South SF) | San Francisco | **city on every card** |
+
+This matters much less than it used to, because the aria-label carries the city
+either way. It was previously recorded as a "server-side layout lottery"; it
+isn't one.
+
+**Condition is web-only among *item* pages.** Mobile item pages come in two layouts,
 and only one of them renders a Details/Condition block — measured 1 of 3
 listings (2026-08-04). The condition string does appear in the raw HTML of the
 other two, which is a trap: it belongs to the "Today's picks" cards at the
@@ -91,8 +127,11 @@ Those sit ~80,000 characters away from the listing's own id and in zero script
 tags, so there is no embedded JSON to fall back on. Reading the first HTML match
 would silently attribute a neighbouring listing's condition to this one.
 
-Consequence: a complete detail record needs **both** item surfaces — web for
-condition and the listing id, mobile for seller name and rating.
+Consequence, given the aria-label finding above: condition no longer needs an
+item page at all, so the web **item** page is only worth loading for its
+embedded coordinates. A full record is card aria-label + mobile item page
+(description, photos, coordinates, seller) + one desktop *search* to resolve the
+listing id.
 
 **Depth and precision are on opposite surfaces.** Mobile paginates
 indefinitely; web caps at ~16 results and doesn't paginate logged out. Web

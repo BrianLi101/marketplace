@@ -69,7 +69,32 @@ page load that §3.2 already requires. Verified end to end: tapping a card
 resolves the id, loads the real description, condition and photos, and "View on
 Facebook" deep-links to that exact item page.
 
-### Search cards often carry no location — a server-side layout lottery
+### Search cards often carry no location — SOLVED 2026-08-04
+
+**We were reading the wrong thing.** Every mobile search card carries an
+`aria-label` holding the untruncated title, the condition, the price and the
+city — 27 of 27 cards, on both layouts. The extractor reads rendered text,
+which on one layout omits the city. Nothing about the webview context was ever
+at fault.
+
+```
+Desk for sale - Used - Good - $75 in Oakland, CA
+Free Computer desk for sale - Used - Like New in El Sobrante, CA
+```
+
+Two shapes: priced listings put the price between the condition and `in`; free
+listings prefix `Free ` and drop the price segment. Parsing both covers every
+card that is a listing.
+
+The layout difference is real but no longer load-bearing, and it is not random:
+requesting a place that differs from the IP-inferred one gets the layout with
+per-card cities, requesting the place you already appear to be in does not.
+Eight search observations, no exceptions. The elimination work below stands as
+a record of what was ruled out, but the premise — that the app was being denied
+data — was wrong.
+
+<details>
+<summary>Original diagnosis, kept for the record</summary>
 
 Category feeds render a city per card and the app shows city + distance there.
 Search is inconsistent, and the cause is **not** in our code:
@@ -102,6 +127,8 @@ into a fresh data store to reroll.
 
 Meanwhile the parse-health metric already reports `failing=location`, which is
 exactly the early warning §8 was specified for; it is working as intended.
+
+</details>
 
 ## Notes for testing
 

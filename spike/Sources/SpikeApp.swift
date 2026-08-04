@@ -99,17 +99,21 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         })()
         """)
         _ = idsJSON
-        // Known-good ids from the first pass: web condition confirmed for all
-        // three, mobile innerText showed it for only the middle one.
-        let ids = ["3202113733318134", "1198359505779796", "1318664736543676"]
-        emit("testing \(ids.count) listings on mobile: \(ids.joined(separator: ", "))")
 
-        for (i, id) in ids.enumerated() {
-            let itemURL = "https://www.facebook.com/marketplace/item/\(id)/"
-            webView.customUserAgent = Self.mobileUA
-            await load(itemURL)
+        // Does the `radius` query parameter push a slug URL out of the
+        // city-bearing layout? Each load gets a clean cookie jar, because a
+        // bucketing decision made on a previous navigation would confound it.
+        let cases: [(String, String)] = [
+            ("sf-matches-ip", "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"),
+            ("oakland-differs", "https://www.facebook.com/marketplace/oakland/search/?query=desk"),
+        ]
+
+        webView.customUserAgent = Self.mobileUA
+        for (label, url) in cases {
+            await clearCookies()
+            await load(url)
             try? await Task.sleep(for: .seconds(14))
-            emit("HIDE\(i) CTX \(await js(Self.conditionContextJS))")
+            emit("ARIA [\(label)] \(await js(Self.ariaCoverageJS))")
         }
 
         emit("=== CONDPROBE COMPLETE ===")
@@ -373,6 +377,132 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         dimensions: has(/Estimated \\(WxDxH\\)/i),
         category: (body.match(/Marketplace\\s*›?\\s*([A-Za-z &]{3,30})/) || [])[1] || null,
         loginWall: has(/you must log in|log into facebook to continue/i)
+      });
+    })()
+    """
+
+    /// Every card's aria-label, not a sample: how many carry one, and how many
+    /// parse as "<title> for sale - <condition> - <price> in <city>, <ST>"?
+    static let ariaCoverageJS = """
+    (function(){
+      var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
+      var cands = all.filter(function(el){
+        var i = el.querySelector('img');
+        return i && (i.getAttribute('src')||'').indexOf('fbcdn') !== -1;
+      });
+      var cards = cands.filter(function(el){
+        return !cands.some(function(o){ return o !== el && el.contains(o); });
+      });
+
+      function labelOf(el){
+        var a = el.getAttribute('aria-label');
+        if (a) return a;
+        var q = el.querySelector('[aria-label]');
+        if (q) return q.getAttribute('aria-label');
+        var img = el.querySelector('img[alt]');
+        return img ? img.getAttribute('alt') : null;
+      }
+
+      var RE = /^(.+?) for sale\\s*[-\\u2013]\\s*(.+?)\\s*[-\\u2013]\\s*(\\$[\\d,]+|Free)\\s+in\\s+(.+?),\\s*([A-Z]{2})$/i;
+      var withLabel = 0, parsed = 0, failures = [], cities = 0, conds = {};
+
+      cards.forEach(function(el){
+        var l = labelOf(el);
+        if (!l) return;
+        withLabel++;
+        var m = l.match(RE);
+        if (m) {
+          parsed++;
+          if (m[4]) cities++;
+          conds[m[2]] = (conds[m[2]] || 0) + 1;
+        } else if (failures.length < 4) {
+          failures.push(l.slice(0, 80));
+        }
+      });
+
+      return JSON.stringify({
+        cards: cards.length,
+        withAriaLabel: withLabel,
+        parsedFully: parsed,
+        cityFromLabel: cities,
+        conditions: Object.keys(conds).map(function(k){ return k + ' x' + conds[k]; }).slice(0, 6),
+        parseFailures: failures
+      });
+    })()
+    """
+
+    /// What does a card actually carry? Variant A shows a Distance chip in its
+    /// header, so it may render distance per card where B renders a city — in
+    /// which case the location data was never missing, only differently spelled.
+    static let cardContentJS = """
+    (function(){
+      var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
+      var cands = all.filter(function(el){
+        var i = el.querySelector('img');
+        return i && (i.getAttribute('src')||'').indexOf('fbcdn') !== -1;
+      });
+      var cards = cands.filter(function(el){
+        return !cands.some(function(o){ return o !== el && el.contains(o); });
+      });
+
+      var body = document.body.innerText || '';
+      var DIST = /\\d+(\\.\\d+)?\\s*(mi|km|miles|kilometers)\\b|\\bnearby\\b|\\baway\\b/gi;
+
+      return JSON.stringify({
+        cards: cards.length,
+        sample: cards.slice(1, 5).map(function(el){
+          return (el.innerText || '').replace(/\\n/g, ' | ').slice(0, 88);
+        }),
+        distanceOnPage: (body.match(DIST) || []).slice(0, 6),
+        cardsWithDistance: cards.filter(function(el){
+          return DIST.test(el.innerText || '');
+        }).length,
+        ariaSample: cards.slice(1, 4).map(function(el){
+          var a = el.getAttribute('aria-label');
+          if (!a) { var q = el.querySelector('[aria-label]'); a = q && q.getAttribute('aria-label'); }
+          return (a || '(none)').slice(0, 76);
+        })
+      });
+    })()
+    """
+
+    /// Which search layout did this URL get? status.md's discriminators are the
+    /// header wording and the count of city-shaped text nodes: variant A has one
+    /// (the page header), variant B has one per card.
+    static let variantProbeJS = """
+    (function(){
+      var w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT), n;
+      var cityNodes = 0, cities = {};
+      while ((n = w.nextNode()) !== null) {
+        var p = n.parentElement;
+        if (!p || p.tagName === 'SCRIPT' || p.tagName === 'STYLE') continue;
+        var t = (n.textContent || '').trim();
+        if (/^[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}$/.test(t)) {
+          cityNodes++; cities[t] = (cities[t] || 0) + 1;
+        }
+      }
+
+      var all = Array.prototype.slice.call(document.querySelectorAll('div[data-action-id]'));
+      var cands = all.filter(function(el){
+        var i = el.querySelector('img');
+        return i && (i.getAttribute('src')||'').indexOf('fbcdn') !== -1;
+      });
+      var cards = cands.filter(function(el){
+        return !cands.some(function(o){ return o !== el && el.contains(o); });
+      });
+
+      var body = document.body.innerText || '';
+      var top = Object.keys(cities).sort(function(a,b){ return cities[b]-cities[a]; })
+                      .slice(0, 4).map(function(k){ return k + ' x' + cities[k]; });
+
+      return JSON.stringify({
+        variant: cityNodes > 3 ? 'B (per-card cities)' : 'A (header only)',
+        cityNodes: cityNodes,
+        cards: cards.length,
+        radiusChip: (body.match(/\\b\\d+\\s*mi\\b/) || [null])[0],
+        header: body.slice(0, 72).replace(/\\n/g, ' '),
+        topCities: top,
+        finalURL: location.href.slice(0, 92)
       });
     })()
     """

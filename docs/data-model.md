@@ -58,12 +58,30 @@ Concretely:
 | `last_seen_at` | write | write |
 | `price_minor`, `status` | **write** — these are what it's for | write |
 | Append to `listing_changes` | write | write |
-| `city`, `title` | fill only if `NULL` | write |
-| Description, photos, condition, dimensions | **never** | write |
+| `title`, `city`, `condition` | **write** — from the aria-label | write |
+| Description, photos, dimensions | **never** | write |
 | Seller name, rating, joined | **never** | write |
+| Coordinates | **never** — item pages only | write |
 | `fb_listing_id` | **never** — cards have none | write when observed |
 | `detail_fetched_at` | **never** | set |
 | Row creation | yes, skeletal | yes |
+
+Title, city and condition moved from fill-if-null to write on 2026-08-04, when
+mobile search cards turned out to carry all three in an `aria-label`:
+
+```
+Desk for sale - Used - Good - $75 in Oakland, CA
+Free Computer desk for sale - Used - Like New in El Sobrante, CA
+```
+
+27 of 27 cards carry one. The title there is **untruncated**, so a sighting's
+title is as good as an item page's and `title_truncated` only describes the
+rendered text, which we no longer read. Condition arriving at sighting time also
+means it no longer justifies loading a web item page.
+
+Free listings use the second shape — `Free ` prefixed to the title, no price
+segment. A parser that only knows the first shape drops them silently, which is
+the same hazard as a truthiness check on `price_minor = 0`.
 
 A row created by a sighting has `detail_fetched_at IS NULL`. That flag is
 load-bearing in three places: the UI knows not to promise details it doesn't
@@ -291,15 +309,19 @@ script tags. Reading the first HTML match would attribute a neighbour's
 condition to this listing. There is no fallback: if the block isn't rendered,
 mobile does not know the condition.
 
-**So a complete detail record requires both surfaces.** Neither one is a
-superset. `DetailEngine` currently uses the desktop UA, so today's flow gets
-condition and the listing id and no seller data at all — and seller rating is
-the "highly rated seller" signal we want.
+**Since condition now arrives with the card, the web item page is nearly
+redundant.** It was worth a load for condition and the listing id; the id comes
+from a desktop *search*, not the item page, and condition comes from the
+aria-label. What remains web-only on an item page is the coordinate pair in
+embedded JSON — and mobile publishes the same value in its static-map URL.
 
-Cost of a detail open, if we want everything: one desktop *search* load to
-resolve the id via `ItemMatcher`, plus a web item page, plus a mobile item page.
-Three loads. Dropping condition would take it to two; dropping seller data would
-take it to two the other way. That's a product call, not a technical one.
+So a full record is: card aria-label (title, city, condition, price) + mobile
+item page (description, photos, coordinates, seller name and rating) + one
+desktop search to resolve the id. Two loads, down from three, and the surface
+that gets dropped is the one with no seller data.
+
+`DetailEngine` currently uses the desktop UA for the item page, so today's flow
+gets no seller data at all — that's the change this implies.
 
 Where both surfaces are loaded, the merge rule is: fill nulls, never overwrite a
 non-null with a null. Coordinates are byte-identical across surfaces, so there
@@ -347,13 +369,9 @@ Ordered by how much damage a wrong guess does.
 2. **How does a sold listing present on its item page?** We've decided *where*
    to detect it; we haven't verified *what* it looks like. Badge, banner,
    redirect, 404?
-3. **Do mobile *feed* cards carry condition in an `aria-label`?** A lead, not a
-   finding. The related-listing cards on mobile item pages label themselves
-   `"<title> for sale - <condition>"`. If search cards do the same, condition is
-   available at sighting time and the matrix row for mobile search is wrong.
-4. **Do listings ever contain video?** Unverified — `kind` is modelled for it
+3. **Do listings ever contain video?** Unverified — `kind` is modelled for it
    speculatively.
-5. **Can an image URL be rebuilt from an FBID?** If not, cached images need
+4. **Can an image URL be rebuilt from an FBID?** If not, cached images need
    either a live page load or us hosting copies, and the second has
    implications worth thinking about before it's load-bearing.
 
@@ -363,7 +381,10 @@ Closed since v0.2:
   and promotional pricing aren't things Facebook Marketplace does. But listings
   can be **free**, so `price_minor = 0` is a valid value distinct from `NULL`,
   and any truthiness check on price would silently drop free listings.
-- ~~Is `condition` on mobile item pages?~~ Only sometimes — see below.
+- ~~Is `condition` on mobile item pages?~~ Only sometimes, and it doesn't
+  matter: mobile search cards carry it in an `aria-label` on every card.
+- ~~Do mobile feed cards carry condition in an `aria-label`?~~ Yes, along with
+  the untruncated title and the city. 27 of 27 cards, both layouts.
 
 ---
 
