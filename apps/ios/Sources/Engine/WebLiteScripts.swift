@@ -221,6 +221,29 @@ enum WebLiteScripts {
         }
       }
 
+      // Descriptions run to several paragraphs. `after` captures one line of at
+      // most 120 characters, so everything past the first line was silently
+      // dropped. Collect every line until the next labelled section instead.
+      var _dlines = mainText.split(String.fromCharCode(10))
+                            .map(function(s){ return s.trim(); })
+                            .filter(function(s){ return s.length > 0; });
+      var _BOUNDARY = /^(Details|Condition|Location|Seller information|Seller details|About the seller|Message|Save|Share|More|Send|Alert|Related searches)$/i;
+      function textAfter(label) {
+        var out = [], started = false;
+        for (var _k = 0; _k < _dlines.length; _k++) {
+          var _ln = _dlines[_k];
+          if (!started) {
+            if (_ln.toLowerCase() === label.toLowerCase()) started = true;
+            continue;
+          }
+          if (_BOUNDARY.test(_ln)) break;
+          if (_ln.indexOf('Listed ') === 0) break;
+          out.push(_ln);
+          if (out.length >= 40) break;
+        }
+        return out.length ? out.join(String.fromCharCode(10)) : null;
+      }
+
       function after(label) {
         var re = new RegExp(label + "\\\\s*\\\\n+([^\\\\n]{1,120})", 'i');
         var m = mainText.match(re);
@@ -239,7 +262,7 @@ enum WebLiteScripts {
       // a listing's description. Matched as substrings, not whole lines.
       var LOGIN_NOISE = /scan the qr code|codes match|log ?in to facebook|log into facebook|you must log ?in|create new account|forgot password|continue with (google|apple|facebook)|keep me signed in|buy and sell in your community|browse or sell items|marketplace is a convenient/i;
 
-      var description = after('Description');
+      var description = textAfter('Description');
       if (description && LOGIN_NOISE.test(description)) description = null;
       if (!description) {
         var CHROME = /^(Message|Save|Share|Details|Condition|Alert|More|See all|Log ?In|Sign ?Up|Marketplace|Home|Buying|Selling|Notifications|Inbox|Create new listing|Categories|Filters|Sort|Seller information|Send seller a message|Is this still available\\?)$/i;
