@@ -224,7 +224,14 @@ enum WebLiteScripts {
       // Description. Some pages label it, most don't — the seller's text just
       // follows the condition — so fall back to picking the longest line that
       // isn't the title, the price, a date, a place, or a piece of chrome.
+      // Login prompts are prose, not chrome words, so the exact-match CHROME
+      // list below never caught them — and being long sentences they won the
+      // "longest line" fallback outright. A QR sign-in modal once rendered as
+      // a listing's description. Matched as substrings, not whole lines.
+      var LOGIN_NOISE = /scan the qr code|codes match|log ?in to facebook|log into facebook|you must log ?in|create new account|forgot password|continue with (google|apple|facebook)|keep me signed in/i;
+
       var description = after('Description');
+      if (description && LOGIN_NOISE.test(description)) description = null;
       if (!description) {
         var CHROME = /^(Message|Save|Share|Details|Condition|Alert|More|See all|Log ?In|Sign ?Up|Marketplace|Home|Buying|Selling|Notifications|Inbox|Create new listing|Categories|Filters|Sort|Seller information|Send seller a message|Is this still available\\?)$/i;
         var pageTitle = document.title || '';
@@ -233,6 +240,7 @@ enum WebLiteScripts {
           var t = line.trim();
           if (t.length < 15) return;
           if (CHROME.test(t)) return;
+          if (LOGIN_NOISE.test(t)) return;                         // sign-in modal prose
           if (/^Listed\\b/i.test(t)) return;                       // "Listed 3 weeks ago…"
           if (/Location is approximate/i.test(t)) return;
           if (/^[A-Z][A-Za-z .'-]+,\\s*[A-Z]{2}$/.test(t)) return;  // a bare "Berkeley, CA"
@@ -256,7 +264,12 @@ enum WebLiteScripts {
           if (!m) return null;
           return m[0].replace(/^.*?\\bin\\s+/i, '').trim();
         })(),
-        loginWall: /you must log in|log into facebook to continue/i.test(document.body.innerText || ''),
+        // A sign-in modal often overlays a page whose real content is still in
+        // the DOM behind it, so a login prompt alone isn't a wall — it's only a
+        // wall if it also cost us the content. Reporting it otherwise would
+        // throw away a listing we successfully read and trip the backoff.
+        loginWall: LOGIN_NOISE.test(document.body.innerText || '')
+                   && !description && photos.length === 0,
         title: document.title
       });
     })()

@@ -14,7 +14,6 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     let webView: WKWebView
     private let metrics: MetricsReporter
     private let pacer: RequestPacer
-    private var navigationContinuation: CheckedContinuation<Void, Never>?
 
     private var cache: [String: ListingDetail] = [:]   // §3.2 — session cache, back-then-forward is instant
 
@@ -57,12 +56,12 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         components.queryItems = [URLQueryItem(name: "query", value: title)]
         guard let searchURL = components.url else { return nil }
 
-        await navigate(to: searchURL)
-        try? await Task.sleep(for: .milliseconds(1500))
+        let started = Date()
+        await beginLoad(searchURL)
 
-        guard let json = try? await webView.evaluateJavaScript(Self.itemLinksJS) as? String,
-              let data = json.data(using: .utf8),
-              let result = try? JSONDecoder().decode(ItemLinks.self, from: data) else { return nil }
+        guard let result = await poll(Self.itemLinksJS, as: ItemLinks.self,
+                                      until: { !$0.items.isEmpty },
+                                      timeout: .seconds(8)) else { return nil }
 
         guard let id = ItemMatcher.bestMatch(title: listing.title,
                                              priceText: listing.priceText,
@@ -71,6 +70,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
             return nil
         }
         await pacer.recordSuccess()
+        Logger.detail.info("resolve ok in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
         return URL(string: "https://www.facebook.com/marketplace/item/\(id)/")
     }
 
@@ -97,11 +97,48 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     })()
     """
 
-    private func navigate(to url: URL) async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            navigationContinuation = cont
-            webView.load(URLRequest(url: url))
+    /// Starts a load without waiting for it to finish, so `poll` can read the
+    /// DOM the moment the content exists. `didFinish` on an item page waits for
+    /// every photo to finish downloading, which is seconds after the
+    /// description and the gallery URLs are already in the document.
+    ///
+    /// The outgoing document is marked first: a freshly loaded page won't carry
+    /// the flag, which is how `poll` tells the new page from the old one
+    /// without depending on URL matching that Facebook may rewrite.
+    private func beginLoad(_ url: URL) async {
+        _ = try? await webView.evaluateJavaScript("window.__mpStale = true")
+        webView.load(URLRequest(url: url))
+    }
+
+    /// Evaluates `script` every `interval` until `isReady` accepts the decoded
+    /// result, or `timeout` elapses — returning the last successful decode
+    /// either way, so a partial read is still usable.
+    ///
+    /// This replaces a fixed `Task.sleep`, which was wrong in both directions:
+    /// it burned the remainder of the wait on pages that hydrated early, and on
+    /// slower ones it read a half-built DOM and reported failure for a page
+    /// that would have loaded perfectly well a moment later.
+    private func poll<T: Decodable>(_ script: String,
+                                    as type: T.Type,
+                                    until isReady: (T) -> Bool,
+                                    timeout: Duration,
+                                    interval: Duration = .milliseconds(150)) async -> T? {
+        // Yields null while the outgoing document is still in place, so a
+        // half-navigated webview can never hand us the previous listing.
+        let guarded = "(function(){ if (window.__mpStale) return null; return \(script); })()"
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var latest: T?
+        while clock.now < deadline {
+            if let json = try? await webView.evaluateJavaScript(guarded) as? String,
+               let data = json.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(type, from: data) {
+                latest = decoded
+                if isReady(decoded) { return decoded }
+            }
+            try? await Task.sleep(for: interval)
         }
+        return latest
     }
 
     func cachedDetail(for id: String) -> ListingDetail? { cache[id] }
@@ -113,12 +150,16 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         let started = Date()
         guard await pacer.waitForSlot() else { return nil }
 
-        await navigate(to: url)
-        try? await Task.sleep(for: .milliseconds(1500))
+        await beginLoad(url)
 
-        guard let json = try? await webView.evaluateJavaScript(WebLiteScripts.extractDetail) as? String,
-              let data = json.data(using: .utf8),
-              let raw = try? JSONDecoder().decode(RawDetail.self, from: data) else {
+        // The description lands well before the gallery does, so requiring only
+        // one of them returns a listing with no photos. Wait for both — `poll`
+        // still hands back whatever it last saw if the gallery never arrives.
+        // A login wall counts as ready: there's nothing more to wait for, and
+        // polling the full ceiling would only delay the backoff.
+        guard let raw = await poll(WebLiteScripts.extractDetail, as: RawDetail.self,
+                                   until: { $0.loginWall || ($0.description != nil && !$0.photoURLs.isEmpty) },
+                                   timeout: .seconds(8)) else {
             Logger.detail.warning("detail parse failed for \(url.absoluteString, privacy: .public)")
             metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: false)
             return nil
@@ -154,17 +195,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         let loginWall: Bool
     }
 
-    nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        Task { @MainActor in
-            self.navigationContinuation?.resume()
-            self.navigationContinuation = nil
-        }
-    }
-
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        Task { @MainActor in
-            self.navigationContinuation?.resume()
-            self.navigationContinuation = nil
-        }
+        Logger.detail.warning("navigation failed: \(error.localizedDescription, privacy: .public)")
     }
 }
