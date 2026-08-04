@@ -2,7 +2,8 @@
 
 **Status:** analysis + recommendation, not yet implemented
 **Date:** 2026-07-31
-**Related:** `feasibility-2026-07-31.md` (how we got here), `status.md` (what's built)
+**Related:** `feasibility-2026-07-31.md` (how we got here), `status.md` (what's built),
+`mobile-location-radius-notes.md` (why mobile's location and radius don't behave as the URL suggests)
 
 Facebook serves two entirely different Marketplace sites depending on the user
 agent, and they have opposite strengths. Everything below was measured from a
