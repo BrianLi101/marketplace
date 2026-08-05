@@ -117,6 +117,13 @@ final class ListingStore: ObservableObject {
         await run(query)
     }
 
+    /// Back to the home screen. Stops any prefetch still running — the user has
+    /// left the result set it was warming, so it's now pure traffic.
+    func clearQuery() {
+        cancelPrefetch()
+        query = nil
+    }
+
     // MARK: - Ingestion
 
     /// Extraction returns every card in the DOM each time, so this is
@@ -165,7 +172,7 @@ final class ListingStore: ObservableObject {
             if let cached = cache.profile(for: listing.id) {
                 seeded.detail = cached.detail
                 seeded.itemURL = cached.itemURL
-                if seeded.locationText == nil { seeded.locationText = cached.detail.locationText }
+                if seeded.locationText == nil { seeded.locationText = cached.detail?.locationText }
             }
             fresh.append(seeded)
         }
@@ -297,10 +304,10 @@ final class ListingStore: ObservableObject {
         }
 
         // Step 2 — the local profile store.
-        if let cached = cache.profile(for: listing.id) {
-            best.detail = cached.detail
+        if let cached = cache.profile(for: listing.id), let cachedDetail = cached.detail {
+            best.detail = cachedDetail
             best.itemURL = best.itemURL ?? cached.itemURL
-            if best.locationText == nil { best.locationText = cached.detail.locationText }
+            if best.locationText == nil { best.locationText = cachedDetail.locationText }
             apply(best)
             onStage(best)
             Logger.store.info("tap -> cache in \(String(format: "%.3f", Date().timeIntervalSince(started)))s (age \(Int(Date().timeIntervalSince(cached.fetchedAt)))s)")
@@ -367,9 +374,26 @@ final class ListingStore: ObservableObject {
 
     /// Writes a fully-read listing to both the grid and the profile store.
     private func record(_ listing: Listing) {
-        guard let detailValue = listing.detail else { return }
-        cache.store(detailValue, itemURL: listing.itemURL, for: listing.id)
+        guard listing.detail != nil else { return }
+        cache.store(listing)
         apply(listing)
+    }
+
+    /// Guarantees a saved listing has something behind it.
+    ///
+    /// The save control is live on the detail screen's first frame, which is
+    /// seconds before a cold listing's enrichment lands — so a save made in
+    /// that window would otherwise point at a profile that doesn't exist, and
+    /// the saved-items screen would have nothing to draw. Writing the card now
+    /// makes the row real immediately; the enrichment already in flight fills
+    /// in the detail a moment later.
+    func remember(_ listing: Listing) {
+        cache.store(listing)
+    }
+
+    /// The saved items, most recently saved first.
+    func savedListings(_ ids: [String]) -> [Listing] {
+        cache.listings(for: ids)
     }
 
     /// Folds a harvest onto the card the user tapped. Built from the original

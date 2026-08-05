@@ -35,6 +35,20 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
     The user never waits for it.
   - Content is delivered in two stages — text as soon as it exists, photos when
     the gallery resolves — so a slow gallery can't hold back the description.
+- **The home screen is the saved list.** With an empty search bar the app shows
+  what you kept, rendered entirely from the local profile store — no network at
+  all, and the launch path reaches it in 0.22s. Emptying the search bar returns
+  here; recent-search pills jump back to a result set (instantly, from the
+  results cache). Launch no longer auto-runs the last query.
+  - Saving writes the card to the profile store *at the moment of the save*, so
+    there is no such thing as a saved listing with nothing behind it. The
+    control is live on the detail screen's first frame, seconds before a cold
+    listing's enrichment lands, so relying on enrichment to have written the
+    profile would have left early saves blank.
+  - **Known defect:** the persisted thumbnail doesn't render after a relaunch —
+    fbcdn URLs are signed (`oh`, `oe`, session-scoped `_nc_gid`). Text fields
+    persist correctly. Tracked in the README to-do; needs image bytes cached
+    rather than the URL.
 - **Saving a listing.** A bookmark in the detail toolbar, keyed on `Listing.id`
   — the photo FBID out of the thumbnail CDN URL. That key is why the grid shows
   a save with no plumbing between the screens, and why the badge follows the

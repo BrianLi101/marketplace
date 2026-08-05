@@ -15,20 +15,35 @@ import SwiftUI
 final class SavedListings: ObservableObject {
     static let shared = SavedListings()
 
-    @Published private(set) var ids: Set<String> = []
+    /// Ordered, most recently saved first — this is the home screen's running
+    /// order, and a `Set` would reshuffle it on every launch.
+    @Published private(set) var ids: [String] = []
+
+    /// Membership is checked once per card on every grid render, so it doesn't
+    /// go through the array.
+    private var index: Set<String> = []
 
     private let defaults: UserDefaults
     private static let key = "savedListingIDs"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        ids = Set(defaults.stringArray(forKey: Self.key) ?? [])
+        ids = defaults.stringArray(forKey: Self.key) ?? []
+        index = Set(ids)
     }
 
-    func contains(_ id: String) -> Bool { ids.contains(id) }
+    var isEmpty: Bool { ids.isEmpty }
+
+    func contains(_ id: String) -> Bool { index.contains(id) }
 
     func toggle(_ id: String) {
-        if ids.contains(id) { ids.remove(id) } else { ids.insert(id) }
-        defaults.set(Array(ids), forKey: Self.key)
+        if index.contains(id) {
+            index.remove(id)
+            ids.removeAll { $0 == id }
+        } else {
+            index.insert(id)
+            ids.insert(id, at: 0)
+        }
+        defaults.set(ids, forKey: Self.key)
     }
 }

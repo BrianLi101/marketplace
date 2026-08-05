@@ -5,9 +5,17 @@ extension Logger {
     static let cache = Logger(subsystem: "com.brianli101.marketplace", category: "cache")
 }
 
-/// A listing we have actually opened and read in full.
+/// Everything known about one listing: the card as the grid saw it, plus the
+/// detail read off its item page.
+///
+/// Both halves are optional and for different reasons. `card` is absent from
+/// files written before the saved-items screen needed it. `detail` is absent
+/// when a listing was saved in the couple of seconds before its first
+/// enrichment landed — the save is still real, it just has nothing behind it
+/// yet, and the next open fills it in.
 struct CachedProfile: Codable {
-    var detail: ListingDetail
+    var card: Listing?
+    var detail: ListingDetail?
     /// The canonical item URL, learned by tapping the card. Worth keeping
     /// separately from the detail: it's what lets a revalidation skip the feed
     /// entirely and load the page directly, which matters for a restored card
@@ -15,6 +23,14 @@ struct CachedProfile: Codable {
     var itemURL: URL?
     var fetchedAt: Date
     var usedAt: Date
+
+    /// The two halves put back together, ready to render.
+    var listing: Listing? {
+        guard var listing = card else { return nil }
+        listing.detail = detail
+        listing.itemURL = listing.itemURL ?? itemURL
+        return listing
+    }
 }
 
 /// The cards from one search, as they were last seen.
@@ -77,18 +93,33 @@ final class ListingCache {
         return hit
     }
 
-    func store(_ detail: ListingDetail, itemURL: URL?, for id: String) {
-        let existing = profiles[id]
-        profiles[id] = CachedProfile(
-            detail: detail,
+    /// Records everything currently known about a listing.
+    ///
+    /// A sighting can never reduce what we know (docs/data-model.md): a call
+    /// carrying no detail — a save made before the first enrichment landed —
+    /// keeps whatever was already there rather than blanking it.
+    func store(_ listing: Listing) {
+        let existing = profiles[listing.id]
+        var card = listing
+        card.detail = nil       // held alongside, not inside; don't store it twice
+
+        profiles[listing.id] = CachedProfile(
+            card: card,
+            detail: listing.detail ?? existing?.detail,
             // Never trade a known URL for nil — a revalidation that couldn't
             // resolve the id shouldn't cost us the one we already had.
-            itemURL: itemURL ?? existing?.itemURL,
-            fetchedAt: Date(),
+            itemURL: listing.itemURL ?? existing?.itemURL,
+            fetchedAt: listing.detail != nil ? Date() : (existing?.fetchedAt ?? Date()),
             usedAt: Date()
         )
         evictIfNeeded()
         scheduleSave()
+    }
+
+    /// Saved listings, most recently saved first, skipping any whose profile
+    /// has gone (nothing evicts a saved one, but a cache file can be deleted).
+    func listings(for ids: [String]) -> [Listing] {
+        ids.compactMap { profiles[$0]?.listing }
     }
 
     var profileCount: Int { profiles.count }

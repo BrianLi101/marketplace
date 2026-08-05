@@ -143,6 +143,60 @@ means the app's radius control is currently decorative on the feed.
 
 ---
 
+## To do
+
+Unchecked means not started. Notes are what we already know that bears on the
+item — several of these are harder or easier than they look.
+
+**Location and radius**
+
+- [ ] **Make location actually work.** Right now the radius control is
+      decorative on the feed: mobile strips the `radius` parameter and falls
+      back to 40 mi, and `latitude`/`longitude` are ignored entirely in favour
+      of the IP-inferred place. Only the city slug or place id in the URL path
+      moves the result set. See `docs/mobile-location-radius-notes.md`.
+- [ ] Decide what the radius control means given the above — filter client-side
+      against per-listing coordinates, or drop the control.
+- [ ] Place ids for cities with no vanity slug (e.g. South San Francisco). A
+      place-id page echoes its own id back in the markup; a slug page doesn't,
+      so "try the slug, verify the header, fall back" is workable.
+
+**Feed quality**
+
+- [ ] **Order the feed by most recently listed.** Unknown whether the surface
+      supports it — no sort parameter has been tested. Item pages only give
+      coarse relative text ("Listed 5 weeks ago"), and cards give no date at
+      all, so if there's no server-side sort this may not be possible without
+      opening every listing.
+- [ ] **Filter out businesses, drop-shippers and custom-order listings.**
+      Signals available without extra fetches: shipping-enabled listings (the
+      surface mixes them in and they're already flagged as a known problem),
+      duplicate coordinates across many listings from one seller, seller rating
+      count, repeated titles. The coordinate signal is real — two listings from
+      one seller carry byte-identical coordinates (`docs/data-model.md`).
+- [ ] Decide drop vs. badge. "Local marketplace browser" and "ships from three
+      states away" are different products.
+
+**Agent shopping**
+
+- [ ] **Describe what you want, get a set of options.** Tell it "a desk under
+      $100 within 5 miles, no particleboard" and have it run the searches, open
+      the candidates, and come back with a shortlist and reasons.
+- [ ] Needs the enrichment path to be cheap enough to open many listings —
+      currently ~2s each and every open is traffic against Facebook, so this
+      wants the backend and the shared cache before it's practical at scale.
+
+**Known defects**
+
+- [ ] **Saved listings lose their thumbnail.** Verified 2026-08-04: a saved card
+      renders its price, title, city and distance from the local store after a
+      relaunch, but the image is a grey placeholder. fbcdn URLs are signed —
+      `oh` signature, `oe` expiry, session-scoped `_nc_gid` — so a persisted URL
+      stops resolving while freshly-fetched cards in the same grid load fine.
+      Fix is to cache the image bytes for saved listings rather than the URL.
+
+---
+
 ## Docs
 
 | File | What's in it |

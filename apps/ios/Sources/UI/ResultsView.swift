@@ -5,6 +5,7 @@ struct ResultsView: View {
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var location: LocationProvider
     @EnvironmentObject private var distances: DistanceResolver
+    @EnvironmentObject private var saved: SavedListings
 
     @State private var searchText = ""
     @State private var selected: Listing?
@@ -48,9 +49,14 @@ struct ResultsView: View {
             .onChange(of: location.coordinate?.latitude) {
                 distances.setUserLocation(location.coordinate)
             }
+            // Emptying the search bar goes home, to the saved list.
+            .onChange(of: searchText) { _, text in
+                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    store.clearQuery()
+                }
+            }
             .task {
                 distances.setUserLocation(location.coordinate)
-                await restoreLastQuery()
             }
         }
     }
@@ -123,10 +129,36 @@ struct ResultsView: View {
                 InlineNotice(text: "Nothing found nearby. Try a wider radius.", actionTitle: nil, action: nil)
                     .padding()
             } else if store.query == nil {
-                EmptyStatePrompt()
+                savedHome
             } else {
                 grid
             }
+        }
+    }
+
+    /// With an empty search bar, the home screen is what the user kept.
+    ///
+    /// Entirely local — every card here comes out of the profile store, which
+    /// is exactly why it can render with no network at all. Saving writes the
+    /// card at the moment it's saved, so there is no such thing as a saved
+    /// listing with nothing behind it.
+    @ViewBuilder
+    private var savedHome: some View {
+        let items = store.savedListings(saved.ids)
+        if items.isEmpty {
+            EmptyStatePrompt(hasSavedNothing: saved.isEmpty)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Saved")
+                    .font(.title3.weight(.semibold))
+                    .padding(.horizontal, 12)
+                StaggeredGrid(items: items, columns: 2, spacing: 12) { listing in
+                    ListingCard(listing: listing, namespace: heroNamespace)
+                        .onTapGesture { selected = listing }
+                }
+                .padding(.horizontal, 12)
+            }
+            .padding(.top, 4)
         }
     }
 
@@ -159,14 +191,6 @@ struct ResultsView: View {
         await store.run(makeQuery(.category(category)))
     }
 
-    /// Reopen where the user left off. Runs once per launch, only when there's
-    /// nothing on screen yet, and never over the top of first-run onboarding.
-    private func restoreLastQuery() async {
-        guard store.query == nil, prefs.hasSeenFirstRun, let kind = prefs.lastQuery else { return }
-        if case .search(let term) = kind { searchText = term }
-        await store.run(makeQuery(kind))
-    }
-
     private func rerunCurrentQuery() async {
         guard let existing = store.query else { return }
         await store.run(makeQuery(existing.kind))
@@ -194,18 +218,27 @@ struct ResultsView: View {
 }
 
 struct EmptyStatePrompt: View {
+    /// Distinguishes "you haven't saved anything yet" from "search for
+    /// something" — the home screen is the saved list now, so an empty one
+    /// should say what would fill it.
+    var hasSavedNothing = true
+
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
+            Image(systemName: hasSavedNothing ? "bookmark" : "magnifyingglass")
                 .font(.largeTitle)
                 .foregroundStyle(.tertiary)
-            Text("Search for something nearby")
+            Text(hasSavedNothing ? "Nothing saved yet" : "Search for something nearby")
                 .font(.headline)
-            Text("Or pick a category above.")
+            Text(hasSavedNothing
+                 ? "Search for something, then tap the bookmark to keep it here."
+                 : "Or pick a category above.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
+        .padding(.horizontal, 32)
         .padding(.top, 80)
     }
 }

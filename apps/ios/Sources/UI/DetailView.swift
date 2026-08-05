@@ -76,6 +76,9 @@ struct DetailView: View {
     private var saveButton: some View {
         let isSaved = saved.contains(current.id)
         return Button {
+            // Record before flagging, so the saved-items screen always has a
+            // card to draw even when this fires before enrichment lands.
+            store.remember(current)
             withAnimation(.snappy(duration: 0.2)) { saved.toggle(current.id) }
         } label: {
             Label(isSaved ? "Saved" : "Save",
