@@ -16,8 +16,19 @@ struct ContentView: View {
             WebViewRepresentable(webView: controller.webView)
                 .frame(maxHeight: .infinity)
             Divider()
-            Text("swipe the web area during the 60s window")
-                .font(.caption2).padding(2)
+            HStack(spacing: 8) {
+                Button("Open login") { controller.openLogin() }
+                    .buttonStyle(.borderedProminent)
+                Button("Check session") { controller.checkSession() }
+                Button("Run tests") { controller.startLoggedInTests() }
+                    .disabled(!controller.looksSignedIn)
+            }
+            .font(.caption)
+            .padding(.vertical, 4)
+            Text(controller.sessionState)
+                .font(.caption2)
+                .foregroundStyle(controller.looksSignedIn ? .green : .secondary)
+                .padding(.bottom, 2)
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
@@ -37,7 +48,7 @@ struct ContentView: View {
                 }
             }
         }
-        .onAppear { controller.start() }
+        .onAppear { controller.checkSession() }
     }
 }
 
@@ -56,7 +67,11 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     override init() {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
+        // Persistent, unlike everywhere else in this project: a signed-in
+        // session has to survive relaunches or every probe run would need the
+        // password typed again. This is the harness, not the app — the app's
+        // engines still use .nonPersistent().
+        config.websiteDataStore = .default()
         // Patching fetch/XHR from evaluateJavaScript after first paint is not a
         // real measurement: the page's own bundle has already run and may hold
         // a reference to the originals, so "nothing was captured" is
@@ -85,10 +100,50 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         NSLog("SPIKE| %@", s)
     }
 
+    @Published var sessionState = "not checked"
+    @Published var looksSignedIn = false
+
     func start() {
         guard !started else { return }
         started = true
         Task { await runTests() }
+    }
+
+    // MARK: - Signed-in session
+
+    /// Opens Facebook's own login page for the user to sign in by hand.
+    ///
+    /// Deliberately the real page in a visible webview: nothing in this project
+    /// collects a password, and nothing here should either. Loads under the
+    /// mobile user agent because the desktop login form is unusable on a phone
+    /// screen — the cookie jar is shared, so tests can switch to the desktop
+    /// agent afterwards.
+    func openLogin() {
+        Task {
+            webView.customUserAgent = Self.mobileUA
+            await load("https://www.facebook.com/login/")
+            emit("login page loaded — sign in in the webview above, then tap 'Check session'")
+        }
+    }
+
+    /// `c_user` is the account id cookie; its presence is the cheapest reliable
+    /// signal that a session exists.
+    func checkSession() {
+        Task {
+            let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
+            let facebook = cookies.filter { $0.domain.contains("facebook.com") }
+            let hasUser = facebook.contains { $0.name == "c_user" }
+            let hasSession = facebook.contains { $0.name == "xs" }
+            looksSignedIn = hasUser && hasSession
+            sessionState = looksSignedIn
+                ? "signed in — \(facebook.count) fb cookies, c_user + xs present"
+                : "signed out — \(facebook.count) fb cookies, c_user=\(hasUser) xs=\(hasSession)"
+            emit("SESSION \(sessionState)")
+        }
+    }
+
+    func startLoggedInTests() {
+        Task { await runLoggedInTests() }
     }
 
     // MARK: - Test sequence
@@ -116,6 +171,60 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// lines, `radius` must shrink the city set.
     func runTests() async {
         await runEndlessScrollTest()
+    }
+
+    /// The four questions that can only be answered with a session, in order of
+    /// how much they'd change the plan.
+    ///
+    /// Q2 is the one that decides whether an all-desktop app is worth building:
+    /// logged out, cards 16–39 arrive with no embedded payload, so if that
+    /// holds when signed in then infinite scroll yields unlimited *markup*
+    /// cards and structured data still stops at ~15 — which is roughly what
+    /// mobile already gives, without putting an account at risk.
+    func runLoggedInTests() async {
+        emit("=== LOGGED-IN BATTERY START ===")
+        let base = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+
+        webView.customUserAgent = Self.desktopUA
+        await load(base)
+        try? await Task.sleep(for: .seconds(10))
+        emit("LI[q0_firstPage] \(await js(Self.desktopPayloadCoverageJS))")
+
+        // Q1: does it scroll past the logged-out ceiling of 39?
+        // Q2: does the payload keep pace with the cards?
+        let scrollView = webView.scrollView
+        var previous = 0
+        for round in 1...10 {
+            for _ in 0..<6 {
+                let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                guard maxY > 10 else { break }
+                let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.85, maxY)
+                scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+                try? await Task.sleep(for: .milliseconds(1100))
+            }
+            let report = await js(Self.desktopPayloadCoverageJS)
+            emit("LI[q1_scroll\(round)] \(report)")
+            let cards = Self.cardsIn(report)
+            if cards == previous, round >= 2 {
+                emit("LI[q1_stalled] \(cards) cards after \(round) rounds")
+                break
+            }
+            previous = cards
+        }
+
+        // Q3: radius is decorative logged out. Does a session change that?
+        for km in [8, 161] {
+            await load(base + "&radius=\(km)")
+            try? await Task.sleep(for: .seconds(9))
+            emit("LI[q3_radius\(km)] \(await js(Self.radiusSpreadJS))")
+        }
+
+        // Q4: desktop item pages carry no seller fields logged out.
+        await load("https://www.facebook.com/marketplace/item/1054280080442808/")
+        try? await Task.sleep(for: .seconds(9))
+        emit("LI[q4_item] \(await js(Self.sellerFieldsJS))")
+
+        emit("=== LOGGED-IN BATTERY COMPLETE ===")
     }
 
     /// Can desktop be scrolled indefinitely by re-dismissing the overlay?
@@ -1811,6 +1920,60 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
           under.dispatchEvent(new MouseEvent(k, { bubbles: true, cancelable: true, clientX: x, clientY: y }));
         });
         return 'clicked backdrop: ' + under.tagName;
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Radius bites or it doesn't: the chip is not evidence, the spread of
+    /// cities in the results is.
+    static let radiusSpreadJS = """
+    (function(){
+      try {
+        var links = document.querySelectorAll('a[href*="/marketplace/item/"]');
+        var cities = {}, ids = [];
+        for (var i = 0; i < links.length; i++) {
+          var label = links[i].getAttribute('aria-label') || '';
+          var m = label.match(/, ([A-Za-z .'-]+, [A-Z]{2}), listing/);
+          if (m) cities[m[1]] = (cities[m[1]] || 0) + 1;
+          var h = links[i].getAttribute('href') || '';
+          var k = h.indexOf('/marketplace/item/');
+          if (k !== -1) {
+            var j = k + 18, id = '';
+            while (j < h.length) {
+              var c = h.charAt(j);
+              if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+            }
+            if (id) ids.push(id);
+          }
+        }
+        var chip = null;
+        var btns = document.querySelectorAll('div[role="button"]');
+        for (var n = 0; n < btns.length; n++) {
+          var t = (btns[n].innerText || '').trim();
+          if (t.indexOf('Within') !== -1) { chip = t.replace(/[\\r\\n]+/g, ' '); break; }
+        }
+        return JSON.stringify({ chip: chip, cards: links.length,
+                                cities: cities, firstIds: ids.slice(0, 5) });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Seller fields are the one thing desktop item pages lack logged out.
+    static let sellerFieldsJS = """
+    (function(){
+      try {
+        var body = document.body.innerText || '';
+        var html = document.documentElement.outerHTML;
+        return JSON.stringify({
+          joined: (body.match(/Joined Facebook[^]{0,24}/i) || [])[0] || null,
+          rating: (body.match(/[0-9]+ ratings?/i) || [])[0] || null,
+          sellerHeading: /Seller information/i.test(body),
+          profileLinks: document.querySelectorAll('a[href*="/marketplace/profile/"]').length,
+          sellerKeyCount: (html.match(/marketplace_listing_seller/g) || []).length,
+          latitude: (html.match(/"latitude":(-?[0-9]+\\.[0-9]+)/) || [])[1] || null,
+          listed: (body.match(/Listed[^]{0,34}/) || [])[0] || null,
+          photos: document.querySelectorAll('img[src*="scontent"]').length
+        });
       } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """
