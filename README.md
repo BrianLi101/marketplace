@@ -195,12 +195,16 @@ item — several of these are harder or easier than they look.
       to persist indefinitely, so a saved card older than that will render its
       price, title and city from the local store with a dead image. Fix is to
       cache the image bytes for saved listings rather than the URL.
-- [ ] **`AsyncImage` never retries a failed load.** A single transient failure
-      leaves a permanent placeholder until the view is rebuilt — observed once
-      on a saved card whose URL was, on checking, still valid for four more days
-      and returning HTTP 200. Worth a retrying image view, especially now that
-      the home screen is served from cache and its images are the only part that
-      touches the network.
+- [ ] **`AsyncImage` never retries, so cards lose their image under load.**
+      Reproducible: a card renders a permanent grey placeholder in the search
+      grid while the *same URL* loads first try on the saved home, returns HTTP
+      200 to `curl`, and has four days left on its expiry. The trigger is
+      contention — the search grid loads ~26 thumbnails at once while two hidden
+      `WKWebView`s render full pages and the prefetch walks 8 item pages of 12+
+      photos each. Requests that lose report `.failure`, and nothing retries.
+      Scrolling away and back doesn't help: `LazyVStack` keeps the view alive
+      rather than rebuilding it. Needs a retrying image view, and probably fewer
+      concurrent image requests while a prefetch is running.
 
 ---
 
