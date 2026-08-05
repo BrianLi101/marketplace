@@ -208,6 +208,13 @@ WebLite's server-side action from inside the app (mouse events, touch events,
 `el.click()`, interactive webview, full opacity — all no-ops, though the same
 code worked in the standalone spike).
 
+> **The tap half of that was wrong**, and is kept here only because this block
+> records what was believed at the time. Taps always fired; the app was
+> watching `decidePolicyFor` for a navigation WebLite never generates, because
+> it routes client-side through `history.replaceState`. Watching
+> `location.href` instead made the in-place tap work, and it is now the primary
+> enrichment path. The listing-id half stands.
+
 Resolved by going around it. The **desktop** surface still exposes real
 `a[href*="/marketplace/item/{id}"]` anchors, so `DetailEngine` searches that
 surface for the listing's own title and matches the result back by title prefix

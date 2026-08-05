@@ -58,9 +58,18 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// Finds the item URL by searching the desktop surface for the listing's
     /// own title and matching the result back against its price and title.
     ///
-    /// This replaces tapping the card in the hidden feed, which never fired
-    /// WebLite's server-side action from inside the app. It costs one page
-    /// load, for a listing the user has actually opened.
+    /// Last resort, not the main path. Tapping the card in the hidden feed
+    /// does work — `FeedEngine.openItem` clicks it and the feed lands on the
+    /// item page — so this runs only when there is no cached `itemURL` and the
+    /// tap produced nothing, e.g. a card index gone stale under the feed. It
+    /// costs one page load and a fuzzy title match, which is why it is the
+    /// fallback rather than the mechanism.
+    ///
+    /// The fuzzy match could be retired: a listing's fbcdn filename segment is
+    /// identical on both surfaces, so the desktop result can be joined to the
+    /// mobile card exactly. See docs/surface-strategy.md §5a — and note the
+    /// key is the *filename* segment, not the payload's
+    /// `primary_listing_photo.id`, which is a different number.
     func resolveItemURL(for listing: Listing, citySlug: String?) async -> URL? {
         guard let title = listing.title, !title.isEmpty else { return nil }
         guard await pacer.waitForSlot() else { return nil }

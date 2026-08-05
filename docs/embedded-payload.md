@@ -70,9 +70,14 @@ Five of these are things the app currently does without, or works to derive:
 - **`creation_time` is an exact unix timestamp.** This is the field that makes
   recency sorting possible at all. Cards render no date, and item pages only say
   "Listed 2 weeks ago" — the payload for that same listing says 20.3 days.
-- **`primary_listing_photo.id` is the photo FBID** the app already parses out of
-  the fbcdn filename to use as `Listing.id`. Here it is as a field, which
-  removes the `h:<title>|<price>` fallback and its collision risk.
+- **`primary_listing_photo.id` is a photo id — but not the app's one.**
+  Recorded here on 2026-08-05 as being the same FBID the app parses out of the
+  fbcdn filename. It is not. The two are adjacent but distinct
+  (`928285703619199` in the filename against `928285686952534` in the payload;
+  6 of 6 sampled differ), so joining on it would match nothing and fail
+  quietly. The value that *does* join mobile to desktop is the filename
+  segment, which is byte-identical across surfaces —
+  `surface-strategy.md` §5a.
 - **`delivery_types` is the local-vs-shipping signal**, structured. See §4.
 - **`city_page.id` is a place id**, free with every card — the open question in
   `mobile-location-radius-notes.md` §8 about cities with no vanity slug.

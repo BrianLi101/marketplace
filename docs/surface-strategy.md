@@ -125,8 +125,20 @@ login wall. The backoff ladder in §7.3 is not theoretical.
    first: 1 per search + 1 per listing opened.
 5. **Much less fragile code.** These exist only to cope with WebLite and could
    be deleted: document-order text bucketing, the ~25s settle/re-read loop,
-   native-scroll pagination, the synthetic tap machinery (which never worked
-   in-app), `ItemMatcher`'s fuzzy matching, and variant handling.
+   native-scroll pagination, the in-place tap machinery, `ItemMatcher`'s fuzzy
+   matching, and variant handling.
+
+> **Corrected 2026-08-05.** This list previously described the synthetic tap
+> machinery as something "which never worked in-app". It works, and has since
+> the tap was rewritten to watch `location.href` instead of `decidePolicyFor`:
+> `FeedEngine.openItem` clicks a card and the feed webview lands on the item
+> page, which is the app's primary enrichment path at ~1.9s per open. The
+> original negative came from watching for a navigation WebLite never
+> generates — it routes client-side through `history.replaceState`. See
+> `probe-checklist.md`, which already carried the correction.
+>
+> Point 1 also needs qualifying: identity is still inferred from the photo's
+> CDN filename, but that inference is no longer surface-bound. See §5a.
 
 ### What it costs
 
@@ -140,7 +152,7 @@ single reason not to go all-desktop.
 | Option | Depth | IDs / location | Complexity |
 |---|---|---|---|
 | A. All mobile | best | none — no deep links, no detail | high, fragile |
-| B. Current hybrid — mobile feed, desktop per-tap resolve | best | fuzzy, ~5s per open | highest |
+| B. Current hybrid — mobile feed, in-place tap, desktop resolve as fallback | best | exact via photo id (§5a), ~1.9s per open | highest |
 | C. **Desktop first, mobile for depth** | good | exact for the first ~16 | medium |
 | D. All desktop | ~16 per query | exact everywhere | lowest |
 
@@ -152,15 +164,54 @@ prices, cities, instant deep links — and mobile is spun up only when the user
 scrolls past ~16 results. Most sessions never leave the first screen, so most
 of the time you get the good surface and the reliable parser.
 
-The seam is the honest wrinkle: merging the two feeds means recognising when a
-mobile card is a listing desktop already returned, which needs the same fuzzy
-matching C otherwise deletes. It would be confined to the boundary past card
-16 rather than applying to every listing. Measured overlap for a single query:
-desktop returned 16 links against mobile's 26 cards, and 15 of 21 sampled
-mobile cards matched a desktop entry by 12-character title prefix (~60%). The
-misses were near-duplicate titles — three "Anthurium Luxurians" listings plus
-one "Anthirium Luxurians" typo — which is exactly where title matching is
-weakest and where having desktop's price and city in the label would help.
+The seam was previously described as the honest wrinkle in C: merging the two
+feeds means recognising when a mobile card is a listing desktop already
+returned, which was thought to need the same fuzzy matching C otherwise
+deletes. Measured overlap for a single query: desktop returned 16 links against
+mobile's 26 cards, and 15 of 21 sampled mobile cards matched a desktop entry by
+12-character title prefix (~60%). The misses were near-duplicate titles — three
+"Anthurium Luxurians" listings plus one "Anthirium Luxurians" typo — which is
+exactly where title matching is weakest.
+
+**That wrinkle is gone — see §5a. The seam has an exact key.**
+
+### 5a. The photo id joins the two surfaces exactly
+
+Measured 2026-08-05, same query, both user agents, one session: **the middle
+segment of a listing's fbcdn filename is identical on mobile and desktop.**
+
+| listing | mobile | desktop |
+|---|---|---|
+| Black L-Shaped Corner Desk with Monitor Shelf | `928285703619199` | `928285703619199` |
+| Wooden writing desk with gray hutch | `965063599852315` | `965063599852315` |
+| Great Condition Desk with Lots of Storage | `1670233630954680` | `1670233630954680` |
+| Blue desk & black rolly chair | `1870301990594903` | `1870301990594903` |
+| Desk (San Francisco) | `822376967512303` | `822376967512303` |
+
+That segment is already what `Listing.id` is built from, so the join needs no
+new extraction — the key the app computes on a mobile card is the same string it
+would compute on the desktop card for the same listing. Dedupe at the seam is an
+equality check, not a similarity score.
+
+**Trap: this is *not* the payload's `primary_listing_photo.id`.** The desktop
+GraphQL payload carries its own photo id, and it is a different number from the
+filename segment — adjacent, which makes it easy to mistake for the same value:
+
+| filename segment | `primary_listing_photo.id` |
+|---|---|
+| `928285703619199` | `928285686952534` |
+| `2893069517699487` | `2893069507699488` |
+| `1670233630954680` | `1670233620954681` |
+
+Six of six sampled differ. Joining on `primary_listing_photo.id` would match
+nothing and fail silently. Use the filename segment.
+
+What this does **not** remove is `ItemMatcher` itself: it is still live at
+`DetailEngine.swift:83`, reached from `ListingStore.swift:365` as the last-resort
+path when neither a cached `itemURL` nor an in-place tap produced a detail. It
+has been demoted from the primary mechanism to a fallback, not deleted, and the
+seam argument above is the reason it *can* now be deleted rather than evidence
+that it has been.
 
 ---
 

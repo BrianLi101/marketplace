@@ -190,9 +190,14 @@ place-id fallback for misses.
   `itemCondition` and `minPrice`/`maxPrice` are all stripped on mobile, and
   none survives a desktop-to-mobile session switch (`filter-parameters.md`).
 - Can the location picker be driven in a hidden webview without a login prompt?
-  Now **only relevant to radius**, since slugs solve location (§7). Synthetic
-  taps do not work on WebLite, so this would need a *visible* picker the user
-  taps themselves.
+  Now **only relevant to radius**, since slugs solve location (§7). This
+  previously read "Synthetic taps do not work on WebLite, so this would need a
+  *visible* picker the user taps themselves" — **that premise is false**.
+  Synthetic taps work; `FeedEngine.openItem` clicks a card and the feed lands on
+  the item page. The old negative came from watching `decidePolicyFor` for a
+  navigation WebLite never emits. So driving the picker in a hidden webview is
+  untested rather than ruled out, and it is the one remaining route to a radius
+  that actually bites.
 - For places with no vanity alias, what is the cheapest way to obtain a place
   id? A place-id page echoes its own id back in the markup, whereas slug pages
   do not — so validate-then-fall-back is viable without a private endpoint.

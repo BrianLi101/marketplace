@@ -88,11 +88,23 @@ local_pick_up&radius=8` (which the desktop page applied, chip and all) → back
 to mobile on an unfiltered URL. The mobile result was **byte-identical to the
 control**. Filters do not persist across the surface boundary.
 
-**Mobile's own filter UI — not addressable.** The mobile search page renders a
-single filter control, a "Distance" chip. It is a `data-action-id` div with no
-`href`, i.e. an opaque WebLite action, and no link anywhere on the page carries
-a filter parameter. WebLite ignores synthetic taps, so this could only be driven
-by a real user tap in a *visible* webview.
+**Mobile's own filter UI — no URL to construct, but possibly drivable.** The
+mobile search page renders a single filter control, a "Distance" chip. It is a
+`data-action-id` div with no `href`, i.e. an opaque WebLite action, and no link
+anywhere on the page carries a filter parameter. So there is nothing to build a
+URL out of.
+
+> **Corrected 2026-08-05.** This paragraph originally ended "WebLite ignores
+> synthetic taps, so this could only be driven by a real user tap in a
+> *visible* webview." That is false, and it was repeated here from a stale note
+> rather than measured. Synthetic taps *do* work — `FeedEngine.openItem` clicks
+> a card with `el.click()` and the feed lands on the item page; it is the app's
+> primary enrichment path. The old negative came from watching
+> `decidePolicyFor` for a navigation WebLite never generates.
+>
+> So the conclusion does not follow: whether the Distance chip can be driven
+> synthetically is **untested**, not closed. Worth trying, because Facebook's
+> own control might set a radius the URL parameter cannot (§3).
 
 ## 5. The trade-off this leaves
 

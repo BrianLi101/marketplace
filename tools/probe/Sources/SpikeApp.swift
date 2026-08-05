@@ -107,7 +107,59 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// `price_ascend` must come back monotonic, `shipping` must lose its city
     /// lines, `radius` must shrink the city set.
     func runTests() async {
-        await runWireTests()
+        await runSeamTests()
+    }
+
+    /// Does a photo id actually bridge the two surfaces?
+    ///
+    /// The app keys a listing on the middle segment of its fbcdn filename, and
+    /// the desktop payload carries a `primary_listing_photo.id`. Whether either
+    /// of those joins mobile to desktop decides if `ItemMatcher`'s fuzzy title
+    /// matching can be deleted or has to stay. Same query, same session, both
+    /// user agents; join on title and compare.
+    func runSeamTests() async {
+        let url = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+
+        webView.customUserAgent = Self.mobileUA
+        await load(url)
+        try? await Task.sleep(for: .seconds(10))
+        let mobileRaw = await js(Self.photoKeyJS)
+
+        webView.customUserAgent = Self.desktopUA
+        await load(url)
+        try? await Task.sleep(for: .seconds(10))
+        let desktopRaw = await js(Self.photoKeyJS)
+        emit("SEAM[payload_vs_filename] \(await js(Self.payloadPhotoIDJS))")
+
+        // NSLog truncates around 1 kB, so the row sets are joined here rather
+        // than shipped out and reassembled.
+        let mobile = Self.decodeRows(mobileRaw)
+        let desktop = Self.decodeRows(desktopRaw)
+        let shared = mobile.keys.filter { desktop[$0] != nil }
+        let agreeing = shared.filter { mobile[$0] == desktop[$0] }
+
+        emit("SEAM[counts] mobile=\(mobile.count) desktop=\(desktop.count) sharedTitles=\(shared.count) samePhotoKey=\(agreeing.count)")
+        for title in shared.prefix(6) {
+            let verdict = mobile[title] == desktop[title] ? "MATCH" : "DIFFER"
+            emit("SEAM[row] \(verdict) '\(title.prefix(30))' m=\(mobile[title] ?? "-") d=\(desktop[title] ?? "-")")
+        }
+
+        emit("=== SEAMPROBE COMPLETE ===")
+    }
+
+    /// `{"rows":[{"t":title,"k":photoSegment}]}` -> `[title: photoSegment]`
+    static func decodeRows(_ json: String) -> [String: String] {
+        struct Row: Decodable { let t: String; let k: String }
+        struct Payload: Decodable { let rows: [Row] }
+        guard let data = json.data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(Payload.self, from: data) else { return [:] }
+        var out: [String: String] = [:]
+        for row in decoded.rows {
+            let key = row.t.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard key.count > 6 else { continue }
+            out[key] = row.k
+        }
+        return out
     }
 
     /// Mobile's *initial* page carries no GraphQL payload. But mobile is the
@@ -1136,6 +1188,69 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
           byInitiatorType: byType,
           facebookNonImage: docLike.slice(0, 10)
         });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Every listing photo on the page as (title, fbcdn middle segment), which
+    /// is the key `Listing.id` is built from.
+    static let photoKeyJS = """
+    (function(){
+      try {
+        var out = [];
+        var imgs = document.querySelectorAll('img');
+        for (var i = 0; i < imgs.length; i++) {
+          var s = imgs[i].getAttribute('src') || '';
+          if (s.indexOf('scontent') === -1 || s.indexOf('rsrc.php') !== -1) continue;
+          var file = s.split('/').pop().split('?')[0];
+          var parts = file.split('_');
+          var label = imgs[i].getAttribute('alt') || '';
+          if (!label) {
+            var a = imgs[i].closest ? imgs[i].closest('[aria-label]') : null;
+            if (a) label = a.getAttribute('aria-label') || '';
+          }
+          // Normalise both surfaces to a bare title: mobile labels read
+          // "<title> for sale - ...", desktop's read "<title>, $40, City, ...".
+          var t = label;
+          var cut = t.indexOf(' for sale');
+          if (cut > 0) t = t.slice(0, cut);
+          else { cut = t.indexOf(', $'); if (cut > 0) t = t.slice(0, cut); }
+          out.push({ t: t.slice(0, 46), k: parts.length > 1 ? parts[1] : file });
+        }
+        return JSON.stringify({ n: out.length, rows: out.slice(0, 30) });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// The desktop payload's own photo id, next to the filename it ships, so
+    /// the two can be compared directly.
+    static let payloadPhotoIDJS = """
+    (function(){
+      try {
+        // Walk it with indexOf rather than a regex: the markup is escaped JSON
+        // inside an attribute, so quote handling in a pattern is a trap.
+        var html = document.documentElement.outerHTML;
+        var out = [], from = 0;
+        for (var n = 0; n < 6; n++) {
+          var anchor = html.indexOf('primary_listing_photo', from);
+          if (anchor === -1) break;
+          from = anchor + 20;
+          var block = html.slice(anchor, anchor + 900);
+          var u = block.indexOf('scontent');
+          if (u === -1) continue;
+          var tail = block.slice(u);
+          var stop = tail.search(/[?"\\\\]/);
+          var uri = stop === -1 ? tail : tail.slice(0, stop);
+          var file = uri.split('/').pop();
+          var parts = file.split('_');
+          // the object's own photo id trails the image object
+          var idm = block.slice(u).match(/id.{0,3}:.{0,3}"(\\d{8,})"/);
+          out.push({
+            filenameSegment: parts.length > 1 ? parts[1] : file,
+            payloadPhotoId: idm ? idm[1] : null
+          });
+        }
+        return JSON.stringify({ pairs: out });
       } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """
