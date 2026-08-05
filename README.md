@@ -284,11 +284,13 @@ item — several of these are harder or easier than they look.
       grid while the *same URL* loads first try on the saved home, returns HTTP
       200 to `curl`, and has four days left on its expiry. The trigger is
       contention — the search grid loads ~26 thumbnails at once while two hidden
-      `WKWebView`s render full pages and the prefetch walks 8 item pages of 12+
-      photos each. Requests that lose report `.failure`, and nothing retries.
-      Scrolling away and back doesn't help: `LazyVStack` keeps the view alive
-      rather than rebuilding it. Needs a retrying image view, and probably fewer
-      concurrent image requests while a prefetch is running.
+      `WKWebView`s render full pages. Requests that lose report `.failure`, and
+      nothing retries. Scrolling away and back doesn't help: `LazyVStack` keeps
+      the view alive rather than rebuilding it. Needs a retrying image view.
+      **Partly mitigated:** the 8-listing prefetch that was the largest
+      contributor is gone (`docs/decision-desktop-primary.md`), so this should
+      be re-measured before being fixed — the remaining contention may be small
+      enough not to trigger it.
 
 ---
 

@@ -99,6 +99,30 @@ struct CaptureContext: Codable, Equatable, Hashable {
 }
 
 extension PayloadListing {
+    /// Builds a grid card from the payload.
+    ///
+    /// Identity comes from the photo filename rather than the listing id, so a
+    /// card built here matches one built from a mobile card for the same
+    /// listing — that equality is what makes merging the two surfaces a lookup
+    /// instead of a fuzzy title comparison (`docs/surface-strategy.md` §5a).
+    /// Falls back to the listing id only when there is no usable photo.
+    func makeListing(cardIndex: Int) -> Listing {
+        Listing(
+            id: listingIdentity ?? "fb:\(id)",
+            title: title,
+            priceText: priceFormatted,
+            originalPriceText: strikethroughFormatted,
+            locationText: locationText,
+            conditionText: nil,          // desktop cards don't carry it; the item page does
+            thumbnailURL: photoURL.flatMap(URL.init(string:)),
+            itemURL: URL(string: "https://www.facebook.com/marketplace/item/\(id)/"),
+            badgeText: (isSold == true) ? "Sold" : nil,
+            cardIndex: cardIndex,
+            detail: nil,
+            capturedAt: Date()
+        )
+    }
+
     /// Merges into a card, filling only what the payload actually knows.
     ///
     /// Never overwrites a known value with nil — a listing enriched from an

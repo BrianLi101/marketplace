@@ -20,11 +20,19 @@ struct MarketplaceApp: App {
                 .environmentObject(saved)
         }
         // Cache writes are coalesced on a 2s debounce, which is right for a
-        // burst of prefetches and wrong for an app about to be killed. Leaving
+        // burst of writes and wrong for an app about to be killed. Leaving
         // the foreground is the last reliable moment to get it to disk.
+        //
+        // Returning to the foreground re-checks the session, because it can end
+        // without the app doing anything — a password change or a Facebook-side
+        // expiry — and a stale belief about being signed in would have the
+        // store keying its cache under the wrong context.
         .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
-            Task { await ListingCache.shared.writeToDisk() }
+            if phase == .active {
+                Task { store.setSession(await SessionState.isSignedIn() ? .authed : .unauthed) }
+            } else {
+                Task { await ListingCache.shared.writeToDisk() }
+            }
         }
     }
 }

@@ -5,11 +5,26 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var location: LocationProvider
+    @EnvironmentObject private var store: ListingStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showSignIn = false
 
     var body: some View {
         NavigationStack {
             Form {
+                Section("Facebook account") {
+                    LabeledContent("Status",
+                                   value: store.session == .authed ? "Signed in" : "Browsing anonymously")
+                    Button(store.session == .authed ? "Manage account" : "Sign in") {
+                        showSignIn = true
+                    }
+                    Text(store.session == .authed
+                         ? "Seller names and ratings are visible, and results keep loading past the first page."
+                         : "Signing in adds seller names and ratings, and lets results load past the first ~15. Optional — everything else works without it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Search area") {
                     Picker("Default radius", selection: $prefs.radiusKM) {
                         ForEach(Preferences.radiusOptions, id: \.self) { km in
@@ -25,7 +40,7 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Text("This app browses public Marketplace listings without signing in. It never asks for, stores, or sees your Facebook password. Messaging a seller opens the Facebook app.")
+                    Text("Signing in is optional and happens on Facebook's own page — this app never asks for, stores, or sees your password. Anonymous browsing uses a separate store that shares nothing with your account. Messaging a seller opens the Facebook app.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -35,6 +50,16 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showSignIn) {
+                SignInView {
+                    // The result set itself changes with the session, so drop
+                    // anything cached under the old one and re-run.
+                    Task {
+                        store.setSession(await SessionState.isSignedIn() ? .authed : .unauthed)
+                        await store.retry()
+                    }
                 }
             }
         }

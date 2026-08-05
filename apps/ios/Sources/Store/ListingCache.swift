@@ -24,6 +24,13 @@ struct CachedProfile: Codable {
     var fetchedAt: Date
     var usedAt: Date
 
+    /// What the app was when this record was captured.
+    ///
+    /// Absent in files written before sessions existed, which decode as `nil` —
+    /// correctly, since those predate any notion of being signed in and their
+    /// seller fields are unknown rather than empty.
+    var capture: CaptureContext?
+
     /// The two halves put back together, ready to render.
     var listing: Listing? {
         guard var listing = card else { return nil }
@@ -31,13 +38,34 @@ struct CachedProfile: Codable {
         listing.itemURL = listing.itemURL ?? itemURL
         return listing
     }
+
+    /// Seller identity is only exposed to a signed-in desktop session, so a
+    /// record captured any other way has *unknown* seller fields, not empty
+    /// ones. The distinction matters because ratings are a primary signal for
+    /// the business-seller filter, and treating "we never had a session" as
+    /// "this seller is unrated" would corrupt it silently.
+    var sellerFieldsAreKnown: Bool {
+        capture?.canCarrySellerIdentity ?? false
+    }
+
+    /// Worth re-fetching now that a session exists.
+    var wouldBenefitFromRefetch: Bool {
+        detail != nil && !sellerFieldsAreKnown
+    }
 }
 
 /// The cards from one search, as they were last seen.
+///
+/// Keyed by session as well as query URL because the *result set* differs by
+/// authentication, not merely the fields on it: signed in, a San Francisco
+/// query returned 15 San Francisco listings, where the same query signed out
+/// spread to Martinez, Vallejo and Oakland. Restoring one under the other would
+/// show the wrong listings, not merely a thinner version of the right ones.
 struct CachedResults: Codable {
     var queryURL: String
     var listings: [Listing]
     var savedAt: Date
+    var session: BrowserSession?
 }
 
 /// On-device persistence for two things with two different lifetimes.
@@ -98,10 +126,20 @@ final class ListingCache {
     /// A sighting can never reduce what we know (docs/data-model.md): a call
     /// carrying no detail — a save made before the first enrichment landed —
     /// keeps whatever was already there rather than blanking it.
-    func store(_ listing: Listing) {
+    func store(_ listing: Listing, capture: CaptureContext? = nil) {
         let existing = profiles[listing.id]
         var card = listing
         card.detail = nil       // held alongside, not inside; don't store it twice
+
+        // Keep the richer provenance. A record captured with a session knows
+        // things a later anonymous sighting doesn't, so an unauthenticated
+        // refresh must not downgrade the claim about what the stored fields
+        // mean — the fields themselves are merged the same way.
+        let mergedCapture: CaptureContext? = {
+            guard let capture else { return existing?.capture }
+            guard let old = existing?.capture else { return capture }
+            return capture.canCarrySellerIdentity || !old.canCarrySellerIdentity ? capture : old
+        }()
 
         profiles[listing.id] = CachedProfile(
             card: card,
@@ -110,10 +148,17 @@ final class ListingCache {
             // resolve the id shouldn't cost us the one we already had.
             itemURL: listing.itemURL ?? existing?.itemURL,
             fetchedAt: listing.detail != nil ? Date() : (existing?.fetchedAt ?? Date()),
-            usedAt: Date()
+            usedAt: Date(),
+            capture: mergedCapture
         )
         evictIfNeeded()
         scheduleSave()
+    }
+
+    /// Profiles worth re-fetching now that a session exists — captured without
+    /// one, so their seller fields are unknown rather than absent.
+    func idsNeedingSellerRefresh() -> [String] {
+        profiles.filter { $0.value.wouldBenefitFromRefetch }.map(\.key)
     }
 
     /// Saved listings, most recently saved first, skipping any whose profile
@@ -139,18 +184,25 @@ final class ListingCache {
 
     // MARK: - Results
 
-    /// Only for the same query — a grid restored under a different search term
-    /// would be actively misleading.
-    func results(for query: SearchQuery) -> [Listing]? {
+    /// Only for the same query *and* the same session — a grid restored under a
+    /// different search term would be actively misleading, and one restored
+    /// under a different authentication state would show genuinely different
+    /// listings rather than a subset (see `CachedResults`).
+    ///
+    /// A file written before sessions existed has no `session`, and is accepted
+    /// only for an unauthenticated read: it was necessarily captured without one.
+    func results(for query: SearchQuery, session: BrowserSession) -> [Listing]? {
         guard let results, results.queryURL == query.url.absoluteString else { return nil }
+        guard (results.session ?? .unauthed) == session else { return nil }
         return results.listings.isEmpty ? nil : results.listings
     }
 
-    func saveResults(_ listings: [Listing], for query: SearchQuery) {
+    func saveResults(_ listings: [Listing], for query: SearchQuery, session: BrowserSession) {
         guard !listings.isEmpty else { return }
         results = CachedResults(queryURL: query.url.absoluteString,
                                 listings: listings,
-                                savedAt: Date())
+                                savedAt: Date(),
+                                session: session)
         scheduleSave()
     }
 

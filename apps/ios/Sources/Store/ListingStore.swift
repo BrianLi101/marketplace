@@ -27,6 +27,27 @@ final class ListingStore: ObservableObject {
     /// exists, so nothing may tap through them until live cards replace them.
     private(set) var isShowingCachedResults = false
 
+    /// Which context the current results were fetched under.
+    ///
+    /// Not cosmetic: the result *set* differs by authentication, not just the
+    /// fields on it — signed in, a San Francisco query returned 15 San
+    /// Francisco listings where signed out it spread to Martinez, Vallejo and
+    /// Oakland. So this keys the results cache, and tags every profile stored
+    /// from these cards.
+    @Published private(set) var session: BrowserSession = .unauthed
+
+    /// Records the session the engines are currently running under. Called
+    /// after a sign-in or sign-out, since it changes what a fetch will return.
+    func setSession(_ session: BrowserSession) {
+        guard session != self.session else { return }
+        self.session = session
+        Logger.store.info("session -> \(session.rawValue, privacy: .public)")
+    }
+
+    private var capture: CaptureContext {
+        CaptureContext(session: session, surface: .mobile, capturedAt: Date())
+    }
+
     init(feed: FeedEngine? = nil,
          detail: DetailEngine? = nil,
          prefs: Preferences = .shared,
@@ -49,12 +70,11 @@ final class ListingStore: ObservableObject {
         listings = []
         seenIDs = []
         health = ParseHealth()
-        cancelPrefetch()
 
         // Last session's cards for this exact query, on the first frame. The
         // live load underneath takes 5.13s to produce anything; there is no
         // reason to show a skeleton for it when we know what was there.
-        if let cached = cache.results(for: query) {
+        if let cached = cache.results(for: query, session: session) {
             listings = cached
             seenIDs = Set(cached.map(\.id))
             isShowingCachedResults = true
@@ -67,10 +87,8 @@ final class ListingStore: ObservableObject {
         await feed.load(query)
         await ingest(await feed.extractCards())
         isLoadingFirstPage = false
-        // Runs alongside `settle()`; both serialize on the feed webview's gate.
-        startPrefetch()
         await settle()
-        cache.saveResults(listings, for: query)
+        cache.saveResults(listings, for: query, session: session)
     }
 
     /// WebLite paints cards before it finishes filling them — an image, price
@@ -117,10 +135,8 @@ final class ListingStore: ObservableObject {
         await run(query)
     }
 
-    /// Back to the home screen. Stops any prefetch still running — the user has
-    /// left the result set it was warming, so it's now pure traffic.
+    /// Back to the home screen.
     func clearQuery() {
-        cancelPrefetch()
         query = nil
     }
 
@@ -199,72 +215,23 @@ final class ListingStore: ObservableObject {
 
     // MARK: - Detail
 
-    // MARK: - Prefetch
-
-    /// How many of the top cards to warm before they're tapped.
-    ///
-    /// Each one costs a real item-page fetch against Facebook, so this trades
-    /// login-wall headroom for latency.
-    ///
-    /// Eight rather than three because the profile store makes repeat launches
-    /// nearly free: anything already cached is skipped, so a second run of the
-    /// same search only pays for cards it has never read.
-    static let prefetchDepth = 8
-
-    private var prefetchTask: Task<Void, Never>?
-    /// The card currently being opened, as its own task. Unstructured, so
-    /// cancelling the loop above stops it *scheduling more work* without
-    /// killing the fetch already in progress — which is what lets a tap on
-    /// this card ride along instead of starting the same work over.
-    private var inFlight: (cardIndex: Int, task: Task<FeedEngine.ItemHarvest?, Never>)?
-
-    /// Warms the top cards by opening them exactly the way a tap does, then
-    /// caching the result. Serial by necessity — there is one feed webview and
-    /// each open parks it on an item page for a couple of seconds.
-    func startPrefetch(count: Int = ListingStore.prefetchDepth) {
-        cancelPrefetch()
-        let targets = Array(listings.prefix(count))
-        guard !targets.isEmpty else { return }
-
-        prefetchTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let began = Date()
-            var warmed = 0
-            var skipped = 0
-            for listing in targets {
-                if Task.isCancelled { break }
-                // Already on disk from an earlier session. Revalidation is the
-                // tap's job — spending a fetch here would burn the traffic
-                // budget on something the user may never open.
-                if self.cache.profile(for: listing.id) != nil {
-                    skipped += 1
-                    continue
-                }
-
-                let cardStart = Date()
-                let task = Task { @MainActor [weak self] in
-                    await self?.feed.openItem(cardIndex: listing.cardIndex, onPartial: { _ in }) ?? nil
-                }
-                self.inFlight = (listing.cardIndex, task)
-                let harvest = await task.value
-                if self.inFlight?.cardIndex == listing.cardIndex { self.inFlight = nil }
-
-                guard let harvest else { continue }
-                self.record(Self.merging(listing, harvest))
-                warmed += 1
-                Logger.store.info("prefetch card \(listing.cardIndex) warm in \(String(format: "%.2f", Date().timeIntervalSince(cardStart)))s")
-            }
-            Logger.store.info("prefetch: \(warmed) warmed, \(skipped) already cached, of \(targets.count) in \(String(format: "%.2f", Date().timeIntervalSince(began)))s")
-            if let query = self.query { self.cache.saveResults(self.listings, for: query) }
-        }
-    }
-
-    func cancelPrefetch() {
-        prefetchTask?.cancel()
-        inFlight?.task.cancel()
-        inFlight = nil
-        prefetchTask = nil
-    }
+    // MARK: - Prefetch: deliberately absent
+    //
+    // There was a `startPrefetch` here that opened the top 8 cards before the
+    // user tapped anything, to hide the ~5s resolve plus ~1.9s tap that opening
+    // a listing used to cost. It is gone, for two reasons.
+    //
+    // It stopped paying: on the desktop surface the item URL is already in the
+    // card's href, and the payload is readable ~0.9s into a ~1.85s load, so a
+    // user-initiated open now lands about where the prefetch was getting us.
+    //
+    // And it was the most automation-shaped thing the app did — eight item-page
+    // fetches nobody asked for, per search. The login wall is the largest
+    // remaining risk to this design and its frequency under sustained use is
+    // still unmeasured, so removing the traffic is close to free insurance.
+    //
+    // **Listings are opened only when a user taps them.** See
+    // docs/decision-desktop-primary.md.
 
     /// Opens a listing, in three steps:
     ///
@@ -283,25 +250,6 @@ final class ListingStore: ObservableObject {
     func enrich(_ listing: Listing, onStage: @MainActor (Listing) -> Void = { _ in }) async -> Listing {
         let started = Date()
         var best = listing
-
-        // A prefetch may be holding the feed webview. If it is fetching *this*
-        // card, ride along — cancelling would throw away work already most of
-        // the way to the answer. Stop the loop queueing more, but let it land.
-        if let inFlight, inFlight.cardIndex == listing.cardIndex {
-            prefetchTask?.cancel()
-            if let harvest = await inFlight.task.value {
-                self.inFlight = nil
-                best = Self.merging(listing, harvest)
-                record(best)
-                onStage(best)
-                Logger.store.info("tap -> joined in-flight prefetch in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
-                return best
-            }
-            self.inFlight = nil
-        } else {
-            // The user's tap outranks a guess about the user's tap.
-            cancelPrefetch()
-        }
 
         // Step 2 — the local profile store.
         if let cached = cache.profile(for: listing.id), let cachedDetail = cached.detail {
@@ -372,10 +320,12 @@ final class ListingStore: ObservableObject {
         return updated
     }
 
-    /// Writes a fully-read listing to both the grid and the profile store.
+    /// Writes a fully-read listing to both the grid and the profile store,
+    /// tagged with the context it was read under so a later reader can tell
+    /// "this seller has no rating" from "we had no session when we looked".
     private func record(_ listing: Listing) {
         guard listing.detail != nil else { return }
-        cache.store(listing)
+        cache.store(listing, capture: capture)
         apply(listing)
     }
 
@@ -388,7 +338,7 @@ final class ListingStore: ObservableObject {
     /// makes the row real immediately; the enrichment already in flight fills
     /// in the detail a moment later.
     func remember(_ listing: Listing) {
-        cache.store(listing)
+        cache.store(listing, capture: capture)
     }
 
     /// The saved items, most recently saved first.
