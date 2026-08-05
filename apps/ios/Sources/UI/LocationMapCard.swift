@@ -11,9 +11,10 @@ import MapKit
 /// The circle's size is not decoration. It says which of two very different
 /// things the centre is, and the two are kilometres apart.
 struct LocationMapCard: View {
+    /// Not rendered — the place is named under the title, where it stays put
+    /// whether or not this card can draw. Kept for the accessibility label.
     let place: String
     let coordinate: CLLocationCoordinate2D
-    let distanceText: String?
     let precision: Precision
 
     /// Where the centre came from — and therefore how much of the map around it
@@ -68,18 +69,9 @@ struct LocationMapCard: View {
             .accessibilityElement()
             .accessibilityLabel("\(precision.caption) around \(place)")
 
-            HStack(spacing: 4) {
-                Text(place)
-                if let distanceText {
-                    Text("·").foregroundStyle(.tertiary)
-                    Text(distanceText)
-                }
-                Spacer()
-                Text(precision.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            Text(precision.caption)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
         }
         // The map is re-centred when the item page's coordinate lands, which is
         // after the first frame. `initialPosition` is read once, so the view has

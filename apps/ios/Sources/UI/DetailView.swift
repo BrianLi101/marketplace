@@ -69,17 +69,31 @@ struct DetailView: View {
         }
     }
 
+    /// A **reserved** square, not a box that grows to whatever the photo turns
+    /// out to be.
+    ///
+    /// This used to be a bare `AsyncImage` with no height: the placeholder is a
+    /// `Color`, which has no intrinsic size and collapses to nothing, and then
+    /// the decoded image expanded the frame to its full aspect height. For a
+    /// listing that was prefetched, everything below the hero is already laid
+    /// out on the first frame — so that expansion shoved the entire page down a
+    /// beat after it appeared. Cold listings hid it, because their content
+    /// arrived seconds later, once the hero had already settled.
+    ///
+    /// The photo is fitted rather than cropped, so an unusually tall or wide
+    /// one letterboxes instead of losing its edges.
     private var hero: some View {
-        AsyncImage(url: current.thumbnailURL) { phase in
-            if let image = phase.image {
-                image.resizable().scaledToFit()
-            } else {
-                Color(.tertiarySystemFill)
+        Color(.tertiarySystemFill)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                AsyncImage(url: current.thumbnailURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    }
+                }
             }
-        }
-        .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .matchedGeometryEffect(id: current.id, in: namespace)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .matchedGeometryEffect(id: current.id, in: namespace)
     }
 
     private var priceBlock: some View {
@@ -93,12 +107,15 @@ struct DetailView: View {
             if let title = current.title {
                 Text(title).font(.title3)
             }
-            // Only while the map can't render — otherwise the same place would
-            // appear twice on one screen.
-            if let location = placeName, mapPoint == nil {
+            // Unconditional. This used to be hidden once the map could render,
+            // which meant a line appearing and then vanishing under the title
+            // as a geocode or an item coordinate landed — a second, smaller
+            // version of the hero's jump. The map card no longer repeats the
+            // place, so there's nothing to de-duplicate against.
+            if let location = placeName {
                 HStack(spacing: 5) {
                     Text(location)
-                    if let distance = distances.distanceText(for: location) {
+                    if let distance = bestDistanceText {
                         Text("·").foregroundStyle(.tertiary)
                         Text(distance)
                     }
@@ -244,18 +261,19 @@ struct DetailView: View {
         return nil
     }
 
-    /// The map replaces the plain location line once a coordinate resolves.
+    /// Measured from the listing's own point when we have it, falling back to
+    /// the geocoded city centroid otherwise.
+    private var bestDistanceText: String? {
+        if let (coordinate, precision) = mapPoint, precision == .listing {
+            return distances.distanceText(to: coordinate)
+        }
+        return distances.distanceText(for: placeName)
+    }
+
     @ViewBuilder
     private var mapBlock: some View {
         if let place = placeName, let (coordinate, precision) = mapPoint {
-            LocationMapCard(place: place,
-                            coordinate: coordinate,
-                            // Measured from the listing's point when we have it,
-                            // falling back to the geocoded city otherwise.
-                            distanceText: precision == .listing
-                                ? distances.distanceText(to: coordinate)
-                                : distances.distanceText(for: place),
-                            precision: precision)
+            LocationMapCard(place: place, coordinate: coordinate, precision: precision)
         }
     }
 
