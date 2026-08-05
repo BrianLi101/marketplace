@@ -181,7 +181,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
             metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: false)
             return nil
         }
-        Logger.detail.info("detail ok: desc=\(raw.description != nil) photos=\(raw.photoURLs.count) cond=\(raw.conditionText != nil)")
+        Logger.detail.info("detail ok: desc=\(raw.description != nil) photos=\(raw.photoURLs.count) cond=\(raw.conditionText != nil) coord=\(raw.latitude ?? "none", privacy: .public),\(raw.longitude ?? "none", privacy: .public)")
         if let expectedID, raw.itemId != expectedID {
             Logger.detail.warning("wrong page: wanted \(expectedID, privacy: .public), got \(raw.itemId ?? "none", privacy: .public)")
             metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: false)
@@ -204,7 +204,9 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
             sellerName: raw.sellerName,
             sellerJoined: raw.sellerJoined,
             sellerRating: raw.sellerRatingText.flatMap(Double.init),
-            sellerRatingCount: raw.sellerRatingCount.flatMap(Int.init)
+            sellerRatingCount: raw.sellerRatingCount.flatMap(Int.init),
+            latitude: raw.latitude.flatMap(Double.init),
+            longitude: raw.longitude.flatMap(Double.init)
         )
         cache[id] = detail
         metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: true)
@@ -235,6 +237,8 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         let postedText: String?
         let conditionText: String?
         let locationText: String?
+        let latitude: String?
+        let longitude: String?
         let loginWall: Bool
     }
 

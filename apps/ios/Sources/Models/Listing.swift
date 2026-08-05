@@ -33,6 +33,13 @@ struct ListingDetail: Codable, Equatable, Hashable {
     var sellerJoined: String?      // "Joined Facebook in 2011"
     var sellerRating: Double?      // 4.8
     var sellerRatingCount: Int?    // 12
+
+    /// Facebook's published approximate point for this listing, from the item
+    /// page only — cards carry no coordinate. Fuzzed by Facebook and labelled
+    /// "Location is approximate", so it is a neighbourhood, not an address; it
+    /// is still kilometres closer than the geocoded city centroid it replaces.
+    var latitude: Double?
+    var longitude: Double?
 }
 
 extension Listing {

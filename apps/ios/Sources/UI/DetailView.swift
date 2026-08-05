@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 /// §3.2 — the progressive preview. The transition never waits on the network:
 /// everything the grid already knows renders on the first frame, and detail
@@ -84,8 +85,9 @@ struct DetailView: View {
             if let title = current.title {
                 Text(title).font(.title3)
             }
-            if let location = current.locationText ?? detail?.locationText,
-               distances.coordinate(for: location) == nil {
+            // Only while the map can't render — otherwise the same place would
+            // appear twice on one screen.
+            if let location = placeName, mapPoint == nil {
                 HStack(spacing: 5) {
                     Text(location)
                     if let distance = distances.distanceText(for: location) {
@@ -217,14 +219,35 @@ struct DetailView: View {
         }
     }
 
+    private var placeName: String? { current.locationText ?? detail?.locationText }
+
+    /// Two sources, in order of how much they actually know.
+    ///
+    /// The listing's own coordinate comes off the item page and doesn't exist
+    /// until enrichment lands, so the city centroid carries the first frame and
+    /// is replaced in place when the real point arrives.
+    private var mapPoint: (CLLocationCoordinate2D, LocationMapCard.Precision)? {
+        if let latitude = detail?.latitude, let longitude = detail?.longitude {
+            return (CLLocationCoordinate2D(latitude: latitude, longitude: longitude), .listing)
+        }
+        if let coordinate = distances.coordinate(for: placeName) {
+            return (coordinate, .city)
+        }
+        return nil
+    }
+
     /// The map replaces the plain location line once a coordinate resolves.
     @ViewBuilder
     private var mapBlock: some View {
-        if let place = current.locationText ?? detail?.locationText,
-           let coordinate = distances.coordinate(for: place) {
+        if let place = placeName, let (coordinate, precision) = mapPoint {
             LocationMapCard(place: place,
                             coordinate: coordinate,
-                            distanceText: distances.distanceText(for: place))
+                            // Measured from the listing's point when we have it,
+                            // falling back to the geocoded city otherwise.
+                            distanceText: precision == .listing
+                                ? distances.distanceText(to: coordinate)
+                                : distances.distanceText(for: place),
+                            precision: precision)
         }
     }
 

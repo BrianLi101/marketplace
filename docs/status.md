@@ -18,13 +18,22 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
   grid's data, hero image shared via `matchedGeometryEffect`, skeletons for
   what's still loading. Never blocks on the network.
 - **Detail enrichment** — full multi-paragraph description with its paragraph
-  breaks, photo strip, posted date, approximate coordinates, and **seller name,
-  star rating and rating count** (mobile-only). Item pages load with the
-  *mobile* UA; the id comes from tapping the card, not a desktop search.
-  Measured 2.25–3.5s end to end, down from 4.7–7.6s.
+  breaks, photo strip, posted date, **the listing's own approximate
+  coordinate**, and **seller name, star rating and rating count** (mobile-only).
+  Item pages load with the *mobile* UA; the id comes from tapping the card, not
+  a desktop search. Measured 2.25–3.5s end to end, down from 4.7–7.6s.
   - Polls for content rather than sleeping a fixed 1.5s, and doesn't wait for
     `didFinish` — on an item page that waits for every photo to download.
   - Rejects any page whose `location.pathname` id isn't the one requested.
+- **Detail map centres on the listing, not the city.** The item page's own
+  coordinate is read from the static-map URL (`center=` on mobile) with the
+  embedded-JSON `"latitude"`/`"longitude"` pair as a fallback, and the map draws
+  a half-mile circle around it at neighbourhood zoom. Where no item coordinate
+  exists the geocoded city centroid still carries the first frame — but at a 6 km
+  circle labelled "City only", since a tight circle on a centroid asserts the
+  listing is near downtown. Verified on two listings: Oakland
+  `37.828674316406,-122.26135253906` (~2.8 km from the centroid it used to draw)
+  and Mountain View `37.416687011719,-122.07458496094`.
 - **Deep linking** — "View on Facebook" opens the listing's own
   `/marketplace/item/{id}` page. Verified against a live listing.
 - **Detail content is scoped to the listing.** Detail pages carry "Related

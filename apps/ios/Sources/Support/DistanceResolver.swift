@@ -53,9 +53,18 @@ final class DistanceResolver: ObservableObject {
     /// Formatted distance, or nil until both the place and the user are known.
     func distanceText(for place: String?) -> String? {
         guard let key = normalize(place),
-              let userLocation,
               let pair = placeCoordinates[key], pair.count == 2 else { return nil }
-        let metres = CLLocation(latitude: pair[0], longitude: pair[1]).distance(from: userLocation)
+        return distanceText(to: CLLocationCoordinate2D(latitude: pair[0], longitude: pair[1]))
+    }
+
+    /// Distance to a coordinate the listing itself supplied. Item pages publish
+    /// an approximate point per listing, which is a much better anchor than the
+    /// city centroid above — same formatting, so the two are interchangeable at
+    /// the call site and the caller just passes the better one when it has it.
+    func distanceText(to coordinate: CLLocationCoordinate2D) -> String? {
+        guard let userLocation else { return nil }
+        let metres = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+            .distance(from: userLocation)
         let miles = metres / 1609.34
         if miles < 1 { return "under 1 mi" }
         return "~\(Int(miles.rounded())) mi"

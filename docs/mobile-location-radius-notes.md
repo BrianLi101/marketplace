@@ -127,6 +127,15 @@ This does **not** solve feed-level distance — cards carry no coordinates — b
 it means any listing the user opens or saves can be pinned properly, and the
 detail map can show a real approximate point instead of a city centre.
 
+**Wired up 2026-08-04.** `extractDetail` reads the `center=` parameter off the
+static-map `<img>` (falling back to raw markup, where `&` arrives as `&amp;`,
+and then to the embedded-JSON pair). The JSON path is only trusted when the page
+names exactly one latitude and one longitude — item pages carry "Today's picks"
+cards belonging to other sellers, and a coordinate in the markup is not
+automatically *this* listing's. Two live listings confirmed distinct, correct
+points; distance on the detail screen is now measured from the listing's own
+coordinate rather than its city centroid.
+
 ## 7. How to set location on mobile (measured 2026-08-04)
 
 Four ways of specifying location, all on the mobile surface, same query,

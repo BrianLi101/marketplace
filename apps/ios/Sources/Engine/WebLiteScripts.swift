@@ -342,6 +342,59 @@ enum WebLiteScripts {
             && _hasLetters(_lines[_j])) sellerName = _lines[_j];
       }
 
+      // Item pages — and only item pages — publish an approximate point for the
+      // listing itself. Mobile embeds it in the static map image URL
+      // (`static_map.php?...&center=37.735290527344%2C-122.39318847656&zoom=11`),
+      // web in embedded JSON. The two agree to the last digit for the same
+      // listing, so this is Facebook's own published point, not anything derived
+      // on the client. It is deliberately fuzzed — "Location is approximate" —
+      // but it beats a city centroid by kilometres.
+      function _validPair(lat, lng) {
+        var a = parseFloat(lat), b = parseFloat(lng);
+        if (isNaN(a) || isNaN(b)) return null;
+        if (a < -90 || a > 90 || b < -180 || b > 180) return null;
+        if (a === 0 && b === 0) return null;   // null island is a parse failure
+        return {lat: String(a), lng: String(b)};
+      }
+      function _coordFromMapURL() {
+        var src = null, imgs = document.querySelectorAll('img');
+        for (var _c = 0; _c < imgs.length; _c++) {
+          var _s = imgs[_c].getAttribute('src') || '';
+          if (_s.indexOf('static_map') !== -1) { src = _s; break; }
+        }
+        // The rendered <img> is preferred: its src is already unescaped. Falling
+        // back to raw markup catches the case where the map hasn't painted yet,
+        // where '&' arrives as '&amp;' — splitting on '&' still terminates.
+        if (!src) {
+          var html = document.documentElement.outerHTML;
+          var mi = html.indexOf('static_map');
+          if (mi === -1) return null;
+          src = html.slice(mi, mi + 400);
+        }
+        var ci = src.indexOf('center=');
+        if (ci === -1) return null;
+        var parts = decodeURIComponent(src.slice(ci + 7).split('&')[0]).split(',');
+        return parts.length === 2 ? _validPair(parts[0], parts[1]) : null;
+      }
+      function _coordFromJSON() {
+        var html = document.documentElement.outerHTML;
+        var lats = html.match(/"latitude":\\s*-?\\d+\\.\\d+/g) || [];
+        var lngs = html.match(/"longitude":\\s*-?\\d+\\.\\d+/g) || [];
+        // A hit in raw markup is not a hit on *this* listing — item pages carry
+        // "Today's picks" cards belonging to other sellers. Accept the pair only
+        // when the page names exactly one, which is the same guard that stopped
+        // a neighbour's condition being attributed here.
+        function _uniq(a) {
+          var m = {}; for (var _u = 0; _u < a.length; _u++) m[a[_u]] = 1;
+          return Object.keys(m);
+        }
+        var uLat = _uniq(lats), uLng = _uniq(lngs);
+        if (uLat.length !== 1 || uLng.length !== 1) return null;
+        return _validPair(uLat[0].split(':')[1], uLng[0].split(':')[1]);
+      }
+      var _coord = null;
+      try { _coord = _coordFromMapURL() || _coordFromJSON(); } catch (e) { _coord = null; }
+
       var _p = location.pathname, _i = _p.indexOf('/item/');
       return JSON.stringify({
         itemId: _i === -1 ? null : _p.slice(_i + 6).split('/')[0],
@@ -360,6 +413,12 @@ enum WebLiteScripts {
           if (!m) return null;
           return m[0].replace(/^.*?\\bin\\s+/i, '').trim();
         })(),
+        // Strings, not numbers: the full precision is kept verbatim rather than
+        // routed through JSON's number formatting. Spurious as geography, but
+        // load-bearing as an identifier — two listings from one seller carry
+        // byte-identical coordinates (docs/data-model.md).
+        latitude: _coord ? _coord.lat : null,
+        longitude: _coord ? _coord.lng : null,
         // A sign-in modal often overlays a page whose real content is still in
         // the DOM behind it, so a login prompt alone isn't a wall — it's only a
         // wall if it also cost us the content. Reporting it otherwise would
