@@ -115,7 +115,100 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// `price_ascend` must come back monotonic, `shipping` must lose its city
     /// lines, `radius` must shrink the city set.
     func runTests() async {
-        await runSocketTests()
+        await runDesktopScrollTests()
+    }
+
+    /// Two things are conflated in "desktop is one page": the result cap, and
+    /// the login modal. This separates them.
+    ///
+    /// The earlier attempt at this ran in a browser pane whose viewport was
+    /// 0x0, so nothing could lazy-load and "no new cards after six scrolls"
+    /// measured nothing. A real `WKWebView` with a real viewport is the only
+    /// honest instrument, and it is also what the app uses.
+    ///
+    /// Recorded per step: card count, whether a dialog is up, and whether the
+    /// listings are still in the DOM behind it — an overlay that leaves the
+    /// cards extractable is a very different constraint from a wall that
+    /// replaces them.
+    func runDesktopScrollTests() async {
+        webView.customUserAgent = Self.desktopUA
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(10))
+
+        emit("DSCROLL[step0] \(await js(Self.desktopWallJS))")
+
+        let scrollView = webView.scrollView
+        var lastCards = -1
+        var stableRounds = 0
+
+        for step in 1...24 {
+            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.85, maxY)
+            scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+            try? await Task.sleep(for: .milliseconds(1100))
+
+            let report = await js(Self.desktopWallJS)
+            // Only log transitions and every fourth step, to keep the run readable.
+            let cards = Self.cardsIn(report)
+            if cards != lastCards || step % 4 == 0 {
+                emit("DSCROLL[step\(step)] \(report)")
+            }
+            if cards == lastCards { stableRounds += 1 } else { stableRounds = 0 }
+            lastCards = cards
+            if report.contains("\"hardWall\":true") {
+                emit("DSCROLL[walled at step \(step)]")
+                break
+            }
+            // Bottom reached and nothing new for a while: it is a cap, not a wall.
+            if stableRounds >= 8, next >= maxY - 1 {
+                emit("DSCROLL[settled at step \(step)] no growth in \(stableRounds) rounds at bottom")
+                break
+            }
+        }
+
+        // The overlay is up from load and pins the document at ~600px, so the
+        // question is not "how much scrolling triggers it" but "does removing
+        // it unlock anything". Two escalating attempts, because they answer
+        // different things: dismissing it tests the product's own affordance,
+        // and forcing the scroll lock off separates "the gate stops us" from
+        // "there is nothing more to fetch".
+        emit("DSCROLL[dismiss] \(await js(Self.dismissOverlayJS))")
+        try? await Task.sleep(for: .seconds(2))
+        emit("DSCROLL[afterDismiss] \(await js(Self.desktopWallJS))")
+
+        for _ in 0..<6 {
+            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.85, maxY)
+            scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+            try? await Task.sleep(for: .milliseconds(1100))
+        }
+        emit("DSCROLL[scrolledAfterDismiss] \(await js(Self.desktopWallJS))")
+
+        // The overlay comes back on scroll, so the real question is whether a
+        // dismiss-scroll loop keeps paying out, and whether the cards it adds
+        // carry the embedded payload or are just markup. `creationTimes`
+        // against `cards` answers the second: if the count stops tracking the
+        // card count, desktop pagination buys reach but not structured data.
+        for round in 1...5 {
+            _ = await js(Self.dismissOverlayJS)
+            try? await Task.sleep(for: .milliseconds(600))
+            for _ in 0..<5 {
+                let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.85, maxY)
+                scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+                try? await Task.sleep(for: .milliseconds(1100))
+            }
+            emit("DSCROLL[loop\(round)] \(await js(Self.desktopPayloadCoverageJS))")
+        }
+
+        emit("=== DSCROLLPROBE COMPLETE ===")
+    }
+
+    static func cardsIn(_ json: String) -> Int {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let n = obj["cards"] as? Int else { return -1 }
+        return n
     }
 
     /// Does WebLite really ship canonical item URLs over a WebSocket before the
@@ -1441,6 +1534,129 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         }
         return JSON.stringify({ landedOn: id || null, indexInSocketList: pos,
                                 socketListSize: w.ids.length });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Desktop card count plus the state of any login prompt, distinguishing a
+    /// dismissible overlay (cards still extractable behind it) from a wall.
+    static let desktopWallJS = """
+    (function(){
+      try {
+        var body = document.body.innerText || '';
+        var cards = document.querySelectorAll('a[href*="/marketplace/item/"]').length;
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        var visibleDialog = null;
+        for (var i = 0; i < dialogs.length; i++) {
+          var r = dialogs[i].getBoundingClientRect();
+          if (r.height > 40 && r.width > 40) {
+            visibleDialog = (dialogs[i].innerText || '').slice(0, 40).replace(/[\\r\\n]+/g, ' ');
+            break;
+          }
+        }
+        // A wall replaces the results; an overlay sits on top of them.
+        var hardWall = (cards === 0) ||
+          body.indexOf('You must log in to continue') !== -1 ||
+          body.indexOf('Log in to continue') !== -1;
+        return JSON.stringify({
+          cards: cards,
+          creationTimes: (document.documentElement.outerHTML.match(/creation_time/g) || []).length,
+          dialog: visibleDialog,
+          hardWall: hardWall,
+          scrollY: Math.round(window.scrollY || 0),
+          docHeight: document.documentElement.scrollHeight
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Click the overlay's own Close affordance, the way a user would.
+    static let dismissOverlayJS = """
+    (function(){
+      try {
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        for (var i = 0; i < dialogs.length; i++) {
+          var buttons = dialogs[i].querySelectorAll('[aria-label], [role="button"]');
+          for (var j = 0; j < buttons.length; j++) {
+            var label = (buttons[j].getAttribute('aria-label') || buttons[j].innerText || '').trim();
+            if (label === 'Close' || label === 'Not now' || label === 'Dismiss') {
+              buttons[j].click();
+              return 'clicked: ' + label;
+            }
+          }
+        }
+        return 'no close affordance found';
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Strip the scroll lock outright. This is not something the app would do —
+    /// it is here to tell the two explanations apart. If the page still will
+    /// not grow with the lock removed, the 15-result cap is the server's, not
+    /// the overlay's.
+    static let forceScrollUnlockJS = """
+    (function(){
+      try {
+        var removed = [];
+        var nodes = [document.documentElement, document.body];
+        for (var i = 0; i < nodes.length; i++) {
+          var s = getComputedStyle(nodes[i]);
+          if (s.overflow === 'hidden' || s.overflowY === 'hidden' || s.position === 'fixed') {
+            removed.push(nodes[i].tagName + ':' + s.overflowY + '/' + s.position);
+            nodes[i].style.setProperty('overflow', 'auto', 'important');
+            nodes[i].style.setProperty('position', 'static', 'important');
+            nodes[i].style.setProperty('height', 'auto', 'important');
+          }
+        }
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        for (var k = 0; k < dialogs.length; k++) {
+          if (dialogs[k].parentNode) dialogs[k].parentNode.removeChild(dialogs[k]);
+        }
+        return JSON.stringify({ unlocked: removed, dialogsRemoved: dialogs.length,
+                                docHeight: document.documentElement.scrollHeight });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Does the payload keep pace with the cards as desktop paginates?
+    ///
+    /// Counting keys is not enough — the question is whether *these specific*
+    /// rendered listings have one, so this checks each visible card's id
+    /// against the markup that holds the payload objects.
+    static let desktopPayloadCoverageJS = """
+    (function(){
+      try {
+        var html = document.documentElement.outerHTML;
+        var links = document.querySelectorAll('a[href*="/marketplace/item/"]');
+        var ids = {}, order = [];
+        for (var i = 0; i < links.length; i++) {
+          var h = links[i].getAttribute('href') || '';
+          var k = h.indexOf('/marketplace/item/');
+          if (k === -1) continue;
+          var j = k + 18, id = '';
+          while (j < h.length) {
+            var c = h.charAt(j);
+            if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+          }
+          if (id.length > 6 && !ids[id]) { ids[id] = 1; order.push(id); }
+        }
+        // A card has payload if its id appears next to a creation_time.
+        var covered = 0;
+        for (var m = 0; m < order.length; m++) {
+          var p = html.indexOf('"' + order[m] + '"');
+          if (p === -1) continue;
+          var window_ = html.slice(Math.max(0, p - 200), p + 1200);
+          if (window_.indexOf('creation_time') !== -1) covered++;
+        }
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        return JSON.stringify({
+          cards: links.length,
+          uniqueIds: order.length,
+          idsWithPayload: covered,
+          creationTimeKeys: (html.match(/creation_time/g) || []).length,
+          dialogUp: dialogs.length > 0,
+          docHeight: document.documentElement.scrollHeight
+        });
       } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """

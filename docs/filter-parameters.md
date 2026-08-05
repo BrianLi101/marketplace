@@ -115,8 +115,15 @@ URL out of.
 | Listing id | no | yes |
 | Seller name / join date / rating | yes | no |
 
-Neither surface is sufficient alone. Scrolling the desktop results six times
-added nothing — it is a hard cap, not lazy loading.
+Neither surface is sufficient alone.
+
+> **Corrected 2026-08-05.** This previously read "Scrolling the desktop results
+> six times added nothing — it is a hard cap, not lazy loading." The test ran
+> in a pane with a 0×0 viewport, where scroll calls are no-ops and nothing can
+> lazy-load, so it measured nothing. Desktop *does* paginate once the login
+> overlay is dismissed: 15 → 39 cards. The conclusion that desktop can't be the
+> depth mechanism survives, but for a different reason — only the first 15 cards
+> carry the embedded payload. See `surface-strategy.md` §3.
 
 ## 6. Recency without losing locality
 

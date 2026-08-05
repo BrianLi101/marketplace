@@ -121,6 +121,20 @@ Mistakes these rules would have caught, all real:
   independent negatives. Neither observes **WebSockets**, which is what WebLite
   actually uses (`embedded-payload.md` §5b). See the rule below.
 
+- Recording that desktop doesn't paginate, from scroll calls issued into a pane
+  whose `innerHeight` was 0. Nothing can lazy-load without a viewport, so the
+  absence of new cards measured the absence of a viewport. Desktop paginates
+  15 → 39 once its login overlay is dismissed (`surface-strategy.md` §3).
+
+## 6a. Confirm the instrument can see a positive
+
+Before recording a negative, make the setup produce a *known* positive. If a
+scroll test can't grow the page even in principle — no viewport, no scroll
+container, a modal holding a scroll lock — then "nothing loaded" is a statement
+about the harness. Cheapest version: assert the precondition (`innerHeight > 0`,
+`scrollHeight > clientHeight`) in the probe itself and fail loudly when it does
+not hold.
+
 ## 7. Agreeing instruments are not independent evidence
 
 Two probes returning nothing is one piece of evidence if they can both miss the

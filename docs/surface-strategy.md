@@ -85,25 +85,62 @@ A real top-level navigation in a webview is required either way.
 
 ## 3. The login modal on desktop
 
-**Sustained scrolling on the desktop surface brings up a login-required modal.**
+**Measured 2026-08-05** in a real `WKWebView` with a real viewport, which
+matters — an earlier attempt ran in a browser pane sized 0×0, where nothing can
+lazy-load, and it produced a confident wrong answer (see §3a).
 
-What we've observed, in order of confidence:
+There is no scroll threshold to find, because the overlay is up from the start:
 
-- A dismissible "See more on Facebook" overlay appears on load and returns on
-  scroll. Listings stay fully rendered in the DOM behind it, so extraction is
-  unaffected while it's merely an overlay.
-- After enough scrolling, it escalates to a login-required modal — reported
-  from hands-on use, and consistent with the full login page the spike hit
-  after repeated requests during a long probing session.
-- **The exact scroll threshold has not been measured.** Worth pinning down
-  before committing to any desktop-heavy design, because it sets a hard ceiling
-  on how far a desktop feed can be driven even if pagination worked.
+| stage | cards | doc height | overlay |
+|---|---|---|---|
+| on load | 15 | 600 px | **up** |
+| 24 scroll steps | 15 | 600 px | up — page never moved (`scrollY` pinned at 20) |
+| after clicking its Close button | 15 | **2340 px** | gone |
+| then scrolling | **39** | 612 px | back up |
+| 4 further dismiss-and-scroll rounds | 39 | 612 px | returns each time |
 
-This matters less than it sounds for the recommendation below, since the
-desktop plan doesn't scroll the feed at all — it reads the first ~16 cards and
-stops. But it's a real constraint on any "just scroll desktop instead" idea,
-and it's a second reason (alongside the hard result cap) that desktop can't be
-the depth mechanism.
+So the sequence is: the "See more on Facebook" overlay appears **on load**, pins
+the document at ~600 px and blocks scrolling entirely. It is dismissible through
+its own Close affordance, and dismissing it unlocks the page. Scrolling then
+genuinely paginates — 15 → 39 cards — after which it returns, and four more
+dismiss-scroll rounds added nothing.
+
+Two things it is *not*:
+
+- **Not an escalating wall.** Across ~30 scroll steps and six dismissals, no
+  hard login page appeared and the listings never left the DOM. The one full
+  login wall on record came from sustained probing over a long session, not
+  from scrolling a single search.
+- **Not an extraction blocker.** All 39 cards stay readable behind it.
+
+### The catch that actually constrains the design
+
+**Only the first 15 cards carry the embedded payload.** Checking each rendered
+card's id against the markup holding the payload objects:
+
+```
+cards 39 · uniqueIds 39 · idsWithPayload 15 · creation_time keys 16
+```
+
+The payload ships with the server-rendered first response. The 24 cards added by
+client-side pagination are markup only — no `creation_time`, no
+`delivery_types`, no `is_sold`. So desktop's structured data is capped at ~15
+per query no matter how far it is scrolled, and scrolling buys reach in a form
+that is no richer than mobile's.
+
+That is the real reason desktop can't be the depth mechanism — not the modal,
+and not a hard result cap.
+
+### 3a. What the earlier wrong answer was, and why
+
+This section previously said sustained scrolling *brings up* the modal, with the
+threshold unmeasured. Separately, the README and `filter-parameters.md` recorded
+that desktop "doesn't paginate logged out — scrolling it six times added
+nothing". Both were wrong, and the second was wrong for an avoidable reason: the
+test ran in a pane whose `innerHeight` was 0, so the scroll calls were no-ops
+and the absence of new cards measured only the absence of a viewport. A test
+that cannot succeed is not evidence of failure — check that the instrument can
+observe a positive before recording a negative.
 
 Also worth remembering: heavy probing during development *did* trigger a full
 login wall. The backoff ladder in §7.3 is not theoretical.

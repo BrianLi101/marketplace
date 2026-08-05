@@ -140,8 +140,13 @@ embedded coordinates. A full record is card aria-label + mobile item page
 listing id.
 
 **Depth and precision are on opposite surfaces.** Mobile paginates
-indefinitely; web caps at 15–24 results and doesn't paginate logged out
-(scrolling it six times added nothing).
+indefinitely. Desktop serves 15 with a "See more on Facebook" overlay up from
+load that pins the page and blocks scrolling; dismissing it via its own Close
+button unlocks scrolling and does paginate, 15 → 39, after which it returns and
+further rounds add nothing. **But only the first 15 carry the embedded
+payload** — the 24 added by pagination are markup only, with no `creation_time`
+or `delivery_types`. Desktop's structured data is therefore capped at ~15 per
+query however far it is scrolled. `docs/surface-strategy.md` §3.
 
 **Filters and sorting are desktop-only, and `radius` works nowhere.** Facebook's
 own desktop controls emit `sortBy`, `deliveryMethod`, `daysSinceListed`,
