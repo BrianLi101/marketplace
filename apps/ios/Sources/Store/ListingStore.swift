@@ -356,7 +356,7 @@ final class ListingStore: ObservableObject {
     /// `onStage` therefore fires up to three times. Every stage is built from
     /// the original card rather than accumulated, so a late partial can't
     /// interleave with an earlier one into a state neither of them described.
-    func enrich(_ listing: Listing, onStage: @MainActor (Listing) -> Void = { _ in }) async -> Listing {
+    func enrich(_ listing: Listing, onStage: @escaping @MainActor (Listing) -> Void = { _ in }) async -> Listing {
         let started = Date()
         var best = listing
 
@@ -389,9 +389,22 @@ final class ListingStore: ObservableObject {
     /// carry no id at all. They stay because mobile stays.
     private func fetchLive(_ listing: Listing,
                            startedAt started: Date,
-                           onStage: @MainActor (Listing) -> Void) async -> Listing? {
+                           onStage: @escaping @MainActor (Listing) -> Void) async -> Listing? {
         if let url = listing.itemURL {
-            guard let detailValue = await detail.loadDetail(id: listing.id, url: url) else { return nil }
+            // Text first, gallery after. The description is readable well
+            // before the photos have rendered, and holding the screen empty
+            // until both are ready is what made an open feel slow.
+            guard let detailValue = await detail.loadDetail(
+                id: listing.id,
+                url: url,
+                onPartial: { partial in
+                    var staged = listing
+                    staged.detail = partial
+                    if staged.locationText == nil { staged.locationText = partial.locationText }
+                    onStage(staged)
+                    Logger.store.info("tap -> text in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+                }
+            ) else { return nil }
             var updated = listing
             updated.detail = detailValue
             if updated.locationText == nil { updated.locationText = detailValue.locationText }
