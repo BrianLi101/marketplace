@@ -96,22 +96,39 @@ There is no scroll threshold to find, because the overlay is up from the start:
 | on load | 15 | 600 px | **up** |
 | 24 scroll steps | 15 | 600 px | up — page never moved (`scrollY` pinned at 20) |
 | after clicking its Close button | 15 | **2340 px** | gone |
-| then scrolling | **39** | 612 px | back up |
-| 4 further dismiss-and-scroll rounds | 39 | 612 px | returns each time |
+| then scrolling | **39** | 612 px | back — and now undismissable |
+| further dismiss attempts | 39 | 612 px | `no close affordance found` |
 
 So the sequence is: the "See more on Facebook" overlay appears **on load**, pins
 the document at ~600 px and blocks scrolling entirely. It is dismissible through
 its own Close affordance, and dismissing it unlocks the page. Scrolling then
-genuinely paginates — 15 → 39 cards — after which it returns, and four more
-dismiss-scroll rounds added nothing.
+genuinely paginates — 15 → 39 cards — after which it returns.
+
+**And the one that returns is a different, undismissable modal.** This is the
+ceiling. Round 2's dismissal reported `no close affordance found`, and
+enumerating every clickable element inside it gives the whole story:
+
+```
+INPUT (email)  ·  "Log In"  ·  "Forgot password?"  ·  "Create new account"
+```
+
+No close control of any kind. Escape is a no-op; a backdrop click is a no-op;
+both leave `scrollable: false` at 612 px. There is exactly **one** free
+dismissal per page load, and it buys 15 → 39.
+
+Note what is *not* holding the page: `bodyOverflow: visible`,
+`bodyPosition: static` — there is no CSS scroll lock to defeat. The document is
+612 px because the modal collapses the results region rather than merely
+covering it. Removing the dialog node outright leaves the height at 580 px, so
+DOM surgery does not recover it either.
 
 Two things it is *not*:
 
-- **Not an escalating wall.** Across ~30 scroll steps and six dismissals, no
-  hard login page appeared and the listings never left the DOM. The one full
-  login wall on record came from sustained probing over a long session, not
-  from scrolling a single search.
-- **Not an extraction blocker.** All 39 cards stay readable behind it.
+- **Not a full login wall.** No hard login *page* appeared across ~30 scroll
+  steps and six dismissal attempts. The one on record came from sustained
+  probing over a long session, not from scrolling a single search.
+- **Not an extraction blocker.** All 39 cards stay in the DOM and readable
+  behind the modal, even while it is unscrollable.
 
 ### The catch that actually constrains the design
 

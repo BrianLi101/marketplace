@@ -115,7 +115,66 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// `price_ascend` must come back monotonic, `shipping` must lose its city
     /// lines, `radius` must shrink the city set.
     func runTests() async {
-        await runDesktopScrollTests()
+        await runEndlessScrollTest()
+    }
+
+    /// Can desktop be scrolled indefinitely by re-dismissing the overlay?
+    ///
+    /// The previous run concluded "no" from four rounds that added nothing —
+    /// but it never checked whether those rounds' dismissals *worked*. If the
+    /// overlay stops offering a Close affordance, a silent no-op is
+    /// indistinguishable from exhausted results, which is the same mistake as
+    /// scrolling a 0-height viewport.
+    ///
+    /// So every round asserts its own precondition: the dismissal is logged,
+    /// and the unlock is confirmed by the document growing past the ~600 px
+    /// locked height before any scrolling is counted.
+    func runEndlessScrollTest() async {
+        webView.customUserAgent = Self.desktopUA
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(10))
+
+        let scrollView = webView.scrollView
+        var previousCards = 0
+
+        for round in 1...8 {
+            let dismissal = await js(Self.dismissOverlayJS)
+            try? await Task.sleep(for: .milliseconds(900))
+            let unlocked = await js(Self.lockStateJS)
+
+            // Scroll only while the page is actually scrollable.
+            for _ in 0..<8 {
+                let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+                guard maxY > 10 else { break }
+                let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.85, maxY)
+                scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+                try? await Task.sleep(for: .milliseconds(1100))
+            }
+
+            let after = await js(Self.desktopPayloadCoverageJS)
+            let cards = Self.cardsIn(after)
+            emit("ENDLESS[r\(round)] dismiss=\(dismissal) | unlocked=\(unlocked) | after=\(after)")
+
+            if cards == previousCards, round >= 3 {
+                emit("ENDLESS[stalled] \(cards) cards, no growth this round")
+                break
+            }
+            previousCards = cards
+        }
+
+        // The second overlay exposes no Close affordance. Before calling that a
+        // hard stop, exhaust the other ways a modal can be dismissed — an
+        // unlabelled X, Escape, or a backdrop click. "My selector found nothing"
+        // is not the same as "nothing is there".
+        emit("ENDLESS[modalAnatomy] \(await js(Self.modalAnatomyJS))")
+        emit("ENDLESS[escape] \(await js(Self.pressEscapeJS))")
+        try? await Task.sleep(for: .milliseconds(900))
+        emit("ENDLESS[afterEscape] \(await js(Self.lockStateJS))")
+        emit("ENDLESS[backdrop] \(await js(Self.clickBackdropJS))")
+        try? await Task.sleep(for: .milliseconds(900))
+        emit("ENDLESS[afterBackdrop] \(await js(Self.lockStateJS))")
+
+        emit("=== ENDLESSPROBE COMPLETE ===")
     }
 
     /// Two things are conflated in "desktop is one page": the result cap, and
@@ -1657,6 +1716,101 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
           dialogUp: dialogs.length > 0,
           docHeight: document.documentElement.scrollHeight
         });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Is the page currently scrollable, and what is holding it if not? The
+    /// locked state is ~600px against an unlocked ~2340px, so the height alone
+    /// distinguishes them.
+    static let lockStateJS = """
+    (function(){
+      try {
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        var labels = [];
+        for (var i = 0; i < dialogs.length; i++) {
+          var r = dialogs[i].getBoundingClientRect();
+          if (r.height > 40) {
+            var buttons = dialogs[i].querySelectorAll('[aria-label]');
+            var affordances = [];
+            for (var j = 0; j < buttons.length && affordances.length < 4; j++) {
+              var l = buttons[j].getAttribute('aria-label');
+              if (l) affordances.push(l);
+            }
+            labels.push({ text: (dialogs[i].innerText || '').slice(0, 28).replace(/[\\r\\n]+/g, ' '),
+                          affordances: affordances });
+          }
+        }
+        var bodyStyle = getComputedStyle(document.body);
+        return JSON.stringify({
+          docHeight: document.documentElement.scrollHeight,
+          scrollable: document.documentElement.scrollHeight > 900,
+          bodyOverflow: bodyStyle.overflowY,
+          bodyPosition: bodyStyle.position,
+          visibleDialogs: labels
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Everything clickable inside the blocking modal, labelled or not.
+    static let modalAnatomyJS = """
+    (function(){
+      try {
+        var out = [];
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        for (var i = 0; i < dialogs.length; i++) {
+          var r = dialogs[i].getBoundingClientRect();
+          if (r.height < 40) continue;
+          var els = dialogs[i].querySelectorAll('[role="button"], button, a, svg, i, [tabindex]');
+          for (var j = 0; j < els.length && out.length < 18; j++) {
+            var e = els[j];
+            var box = e.getBoundingClientRect();
+            out.push({
+              tag: e.tagName,
+              role: e.getAttribute('role'),
+              label: e.getAttribute('aria-label'),
+              text: (e.innerText || '').slice(0, 22).replace(/[\\r\\n]+/g, ' '),
+              w: Math.round(box.width), h: Math.round(box.height)
+            });
+          }
+        }
+        return JSON.stringify({ controls: out });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    static let pressEscapeJS = """
+    (function(){
+      try {
+        var opts = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true };
+        [document, document.body].forEach(function(t){
+          t.dispatchEvent(new KeyboardEvent('keydown', opts));
+          t.dispatchEvent(new KeyboardEvent('keyup', opts));
+        });
+        return 'escape dispatched';
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Click just outside the modal, where a backdrop would be.
+    static let clickBackdropJS = """
+    (function(){
+      try {
+        var dialogs = document.querySelectorAll('[role="dialog"]');
+        var target = null;
+        for (var i = 0; i < dialogs.length; i++) {
+          if (dialogs[i].getBoundingClientRect().height > 40) { target = dialogs[i]; break; }
+        }
+        if (!target) return 'no modal';
+        var r = target.getBoundingClientRect();
+        var x = Math.max(4, r.left / 2), y = Math.max(4, r.top / 2);
+        var under = document.elementFromPoint(x, y);
+        if (!under) return 'nothing at backdrop point';
+        ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){
+          under.dispatchEvent(new MouseEvent(k, { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+        });
+        return 'clicked backdrop: ' + under.tagName;
       } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """

@@ -140,13 +140,14 @@ embedded coordinates. A full record is card aria-label + mobile item page
 listing id.
 
 **Depth and precision are on opposite surfaces.** Mobile paginates
-indefinitely. Desktop serves 15 with a "See more on Facebook" overlay up from
-load that pins the page and blocks scrolling; dismissing it via its own Close
-button unlocks scrolling and does paginate, 15 → 39, after which it returns and
-further rounds add nothing. **But only the first 15 carry the embedded
-payload** — the 24 added by pagination are markup only, with no `creation_time`
-or `delivery_types`. Desktop's structured data is therefore capped at ~15 per
-query however far it is scrolled. `docs/surface-strategy.md` §3.
+indefinitely. Desktop cannot: there is exactly **one** free dismissal of its
+login overlay per page load. It serves 15 cards with a dismissable "See more on
+Facebook" overlay up from the start; clicking Close unlocks scrolling and
+paginates to 39; the overlay then returns as a *different* modal offering only
+Log In and Create Account — no close control, Escape and backdrop clicks both
+no-ops. Hard ceiling: **39 cards, of which only the first 15 carry the embedded
+payload** (the rest are markup only, no `creation_time` or `delivery_types`).
+All 39 stay extractable behind the modal. `docs/surface-strategy.md` §3.
 
 **Filters and sorting are desktop-only, and `radius` works nowhere.** Facebook's
 own desktop controls emit `sortBy`, `deliveryMethod`, `daysSinceListed`,
