@@ -35,6 +35,14 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
     The user never waits for it.
   - Content is delivered in two stages — text as soon as it exists, photos when
     the gallery resolves — so a slow gallery can't hold back the description.
+- **Saving a listing.** A bookmark in the detail toolbar, keyed on `Listing.id`
+  — the photo FBID out of the thumbnail CDN URL. That key is why the grid shows
+  a save with no plumbing between the screens, and why the badge follows the
+  listing when Facebook reorders results between loads (verified across a
+  relaunch). Saved ids live in UserDefaults, and `ListingCache` refuses to evict
+  a saved listing's profile: that's user data, not cache. The grid badge is
+  read-only — saving is a deliberate act on the detail screen, not something a
+  thumb can do by brushing the grid.
 - **On-device persistence** (`ListingCache`), two stores with different jobs:
 
   | | |

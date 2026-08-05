@@ -11,6 +11,7 @@ struct DetailView: View {
     @EnvironmentObject private var store: ListingStore
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var distances: DistanceResolver
+    @EnvironmentObject private var saved: SavedListings
     @State private var current: Listing
     @State private var didFail = false
     @State private var isEnriching = true
@@ -41,6 +42,7 @@ struct DetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .bottom) { primaryAction }
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { saveButton }
             // Sharing was the only other entry in what used to be an overflow
             // menu, so it goes straight in the toolbar rather than behind one.
             if let url = current.itemURL {
@@ -67,6 +69,19 @@ struct DetailView: View {
                 isEnriching = false
             }
         }
+    }
+
+    /// Keyed on the listing id — the photo FBID — so the grid reflects a save
+    /// the moment it happens, with no separate plumbing between the screens.
+    private var saveButton: some View {
+        let isSaved = saved.contains(current.id)
+        return Button {
+            withAnimation(.snappy(duration: 0.2)) { saved.toggle(current.id) }
+        } label: {
+            Label(isSaved ? "Saved" : "Save",
+                  systemImage: isSaved ? "bookmark.fill" : "bookmark")
+        }
+        .accessibilityLabel(isSaved ? "Saved. Tap to remove." : "Save listing")
     }
 
     /// Every image on this screen has a **fixed height**: the hero below, and

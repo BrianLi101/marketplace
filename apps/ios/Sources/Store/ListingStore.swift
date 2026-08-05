@@ -127,11 +127,16 @@ final class ListingStore: ObservableObject {
         // which now points at a different card — or at nothing — and a tap
         // would open the wrong listing. Detail already fetched isn't lost: it
         // comes back out of the profile cache below.
-        if isShowingCachedResults, !raw.isEmpty {
-            isShowingCachedResults = false
-            listings = []
-            seenIDs = []
-        }
+        //
+        // The replacement is one assignment at the end, never a clear followed
+        // by a refill. `listings` is `@Published` and the grid renders "Nothing
+        // found nearby" on an empty array — so emptying it, even for an instant,
+        // tears down the grid and pops any listing the user has open.
+        let isReplacingCached = isShowingCachedResults && !raw.isEmpty
+        // Worked out on a copy, so a replacement that turns out to yield nothing
+        // (every card filtered, say) leaves the restored grid exactly as it was
+        // rather than half-dismantling it.
+        var seen = isReplacingCached ? Set<String>() : seenIDs
 
         var counts = ParseHealth()
         counts.domCards = raw.count
@@ -149,11 +154,11 @@ final class ListingStore: ObservableObject {
                 counts.dropped += 1
                 continue
             }
-            guard !seenIDs.contains(listing.id) else {
+            guard !seen.contains(listing.id) else {
                 fillGaps(from: listing)
                 continue
             }
-            seenIDs.insert(listing.id)
+            seen.insert(listing.id)
             // A card we've fully read before arrives already complete, so its
             // detail screen opens with everything on the first frame.
             var seeded = listing
@@ -165,10 +170,18 @@ final class ListingStore: ObservableObject {
             fresh.append(seeded)
         }
 
-        counts.rendered = listings.count + fresh.count
+        if isReplacingCached {
+            guard !fresh.isEmpty else { return }   // keep the restored grid
+            isShowingCachedResults = false
+            counts.rendered = fresh.count
+            listings = fresh                       // one assignment, never empty
+        } else {
+            counts.rendered = listings.count + fresh.count
+            listings.append(contentsOf: fresh)
+        }
+        seenIDs = seen
         health = counts
         metrics.parseHealth(counts)
-        listings.append(contentsOf: fresh)
     }
 
     /// §6.2 — filtering happens in Swift, after extraction, so the page's own

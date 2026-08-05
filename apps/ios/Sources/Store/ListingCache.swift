@@ -49,11 +49,16 @@ final class ListingCache {
     private var results: CachedResults?
     private var saveTask: Task<Void, Never>?
     private let directory: URL
+    /// Saved listings are user data, not cache. Letting the LRU evict one would
+    /// quietly drop the detail behind something the user deliberately kept.
+    private let isSaved: @MainActor (String) -> Bool
 
     private var profilesFile: URL { directory.appendingPathComponent("profiles.json") }
     private var resultsFile: URL { directory.appendingPathComponent("results.json") }
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil,
+         isSaved: @escaping @MainActor (String) -> Bool = { SavedListings.shared.contains($0) }) {
+        self.isSaved = isSaved
         self.directory = directory ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("MarketplaceCache", isDirectory: true)
@@ -88,11 +93,13 @@ final class ListingCache {
 
     var profileCount: Int { profiles.count }
 
-    /// Least-recently-used first. `usedAt` is touched on read, so the listings
-    /// that survive are the ones being looked at, not merely the newest.
+    /// Least-recently-used first, skipping anything saved. `usedAt` is touched
+    /// on read, so the listings that survive are the ones being looked at, not
+    /// merely the newest.
     private func evictIfNeeded() {
         guard profiles.count > Self.profileLimit else { return }
         let doomed = profiles
+            .filter { !isSaved($0.key) }
             .sorted { $0.value.usedAt < $1.value.usedAt }
             .prefix(profiles.count - Self.profileLimit)
         for (id, _) in doomed { profiles.removeValue(forKey: id) }

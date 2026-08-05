@@ -4,6 +4,7 @@ struct ListingCard: View {
     let listing: Listing
     let namespace: Namespace.ID
     @EnvironmentObject private var distances: DistanceResolver
+    @EnvironmentObject private var saved: SavedListings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -72,6 +73,20 @@ struct ListingCard: View {
                     .padding(.vertical, 4)
                     .background(.thinMaterial, in: Capsule())
                     .padding(8)
+            }
+        }
+        // Top-*trailing*, so it can never collide with the "Price drop" badge
+        // above. Read-only here: saving is a deliberate act on the detail
+        // screen, not something a thumb can do by brushing the grid.
+        .overlay(alignment: .topTrailing) {
+            if saved.contains(listing.id) {
+                Image(systemName: "bookmark.fill")
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+                    .padding(6)
+                    .background(.thinMaterial, in: Circle())
+                    .padding(8)
+                    .accessibilityLabel("Saved")
             }
         }
     }
