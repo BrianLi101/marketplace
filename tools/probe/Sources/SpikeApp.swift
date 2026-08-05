@@ -22,6 +22,8 @@ struct ContentView: View {
                 Button("Check session") { controller.checkSession() }
                 Button("Run tests") { controller.startLoggedInTests() }
                     .disabled(!controller.looksSignedIn)
+                Button("Timing") { controller.startTimingTests() }
+                    .disabled(!controller.looksSignedIn)
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -146,6 +148,13 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         Task { await runLoggedInTests() }
     }
 
+    func startTimingTests() {
+        Task {
+            webView.customUserAgent = Self.desktopUA
+            await runTimingTests()
+        }
+    }
+
     // MARK: - Test sequence
 
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"
@@ -224,7 +233,69 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         try? await Task.sleep(for: .seconds(9))
         emit("LI[q4_item] \(await js(Self.sellerFieldsJS))")
 
+        await runTimingTests()
+
         emit("=== LOGGED-IN BATTERY COMPLETE ===")
+    }
+
+    /// When does an item page's *data* become readable, relative to when the
+    /// page finishes loading?
+    ///
+    /// If the payload lands well before `didFinish`, the app never has to wait
+    /// for the page — it can extract as soon as the JSON is in the document and
+    /// abandon the rest of the load. That is the difference between a detail
+    /// screen that fills in at first byte and one that waits on images and
+    /// third-party chrome.
+    ///
+    /// Polls at 25 ms through the whole load rather than sampling afterwards,
+    /// because the question is precisely about the interval.
+    func runTimingTests() async {
+        let items = [
+            "1054280080442808",
+            "1624050395351390",
+            "1318664736543676"
+        ]
+
+        for id in items {
+            // Belt and braces alongside the id guard in the probe: start from a
+            // blank document so there is no stale item page to mistake for the
+            // one being timed.
+            await load("about:blank")
+            try? await Task.sleep(for: .milliseconds(400))
+
+            let clock = ContinuousClock()
+            let start = clock.now
+            var finishAt: Duration?
+            onDidFinish = { [weak self] in
+                guard self != nil, finishAt == nil else { return }
+                finishAt = clock.now - start
+            }
+
+            webView.load(URLRequest(url: URL(string: "https://www.facebook.com/marketplace/item/\(id)/")!))
+
+            var payloadAt: Duration?
+            var renderedAt: Duration?
+            let deadline = start + .seconds(25)
+            while clock.now < deadline {
+                let probe = await js(Self.timingProbe(expectedID: id))
+                if payloadAt == nil, probe.contains("\"payload\":true") {
+                    payloadAt = clock.now - start
+                }
+                if renderedAt == nil, probe.contains("\"rendered\":true") {
+                    renderedAt = clock.now - start
+                }
+                if payloadAt != nil, renderedAt != nil, finishAt != nil { break }
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+
+            func ms(_ d: Duration?) -> String {
+                guard let d else { return "n/a" }
+                return String(format: "%.2fs", Double(d.components.seconds) + Double(d.components.attoseconds) * 1e-18)
+            }
+            emit("TIMING[\(id)] payload=\(ms(payloadAt)) rendered=\(ms(renderedAt)) didFinish=\(ms(finishAt))")
+            onDidFinish = nil
+            try? await Task.sleep(for: .seconds(2))
+        }
     }
 
     /// Can desktop be scrolled indefinitely by re-dismissing the overlay?
@@ -645,8 +716,13 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         }
     }
 
+    /// Set to observe `didFinish` without blocking on it — the timing test
+    /// needs to keep polling *through* the load rather than wait for its end.
+    var onDidFinish: (@MainActor () -> Void)?
+
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         Task { @MainActor in
+            self.onDidFinish?()
             navContinuation?.resume()
             navContinuation = nil
         }
@@ -1977,6 +2053,38 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
       } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """
+
+    /// Two independent readiness signals for one item page.
+    ///
+    /// `payload` uses the own-listing discriminator — a `creation_time`
+    /// followed by `location_text` — rather than any `creation_time`, because
+    /// the "Today's picks" rail carries ~20 belonging to other sellers and
+    /// would report ready far too early.
+    /// Takes the expected listing id, because `webView.load()` leaves the
+    /// previous document in place until the new one commits — and the previous
+    /// document is another item page carrying the same marker keys. Without
+    /// this guard the first poll reports ready at ~0 ms every time, which is
+    /// how the first run produced a 0.01 s "result".
+    static func timingProbe(expectedID: String) -> String {
+        """
+        (function(){
+          try {
+            var html = document.documentElement.outerHTML;
+            var body = document.body ? (document.body.innerText || '') : '';
+            var fresh = location.href.indexOf('\(expectedID)') !== -1;
+            var own = html.indexOf('location_text') !== -1 &&
+                      html.indexOf('creation_time') !== -1;
+            return JSON.stringify({
+              fresh: fresh,
+              payload: fresh && own,
+              rendered: fresh && body.indexOf('Listed') !== -1 && body.length > 200,
+              htmlLen: html.length,
+              bodyLen: body.length
+            });
+          } catch (e) { return JSON.stringify({ payload: false, rendered: false }); }
+        })()
+        """
+    }
 
     static let cardCountJS = """
     (function(){

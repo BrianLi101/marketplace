@@ -302,5 +302,6 @@ item — several of these are harder or easier than they look.
 | `docs/surface-strategy.md` | Mobile vs. web trade-off, options, and recommendation |
 | `docs/mobile-location-radius-notes.md` | Why mobile's location and radius don't behave as the URL implies |
 | `docs/filter-parameters.md` | Every sort/filter parameter, which surface honours it, and what's measured |
-| `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isn't worth calling |
+| `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isnt worth calling |
+| `docs/logged-in-findings.md` | What a signed-in session changes: seller identity yes, structured depth no |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |
