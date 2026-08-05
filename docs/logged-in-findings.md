@@ -30,8 +30,38 @@ all. That is the missing ingredient for the "filter out businesses and
 drop-shippers" goal — listings can be grouped by seller instead of guessed at
 from duplicate coordinates and repeated titles.
 
-Rating was absent here; whether that is per-seller or needs a seller with
-ratings is untested.
+### Ratings are not confirmed anywhere — do not build on them
+
+Six listings, both user agents, all signed in:
+
+| | desktop | mobile |
+|---|---|---|
+| "Joined Facebook in …" | 6/6 | **6/6** |
+| seller rating | **0/6** | **0/6** |
+| `/marketplace/profile/<id>` links | **3 on 6/6** | **0 on 6/6** |
+| rendered photos | 5–27 | 5–9 |
+
+Two things fall out, and one of them cuts against the all-desktop plan.
+
+**Ratings did not appear on either surface for any of the six sellers.** The
+likely explanation is that these sellers are simply unrated — Facebook only
+shows a rating where one exists — but that is a guess, and the honest position
+is that *no* surface has been observed rendering a seller rating. A "stars and
+ratings" UI should not be planned until a rated seller has been found and
+confirmed.
+
+**Seller join date is on mobile too, logged out.** So the seller *name and join
+date* are not a login-only win; what login-plus-desktop uniquely adds is the
+`/marketplace/profile/<id>` link — the stable seller id, absent from mobile on
+all six. That is the part worth having, and it is the part that enables grouping
+listings by seller.
+
+The corollary matters for the logged-out path: an all-desktop app shows an
+unauthenticated user **less** seller information than the current mobile-based
+one, which gets name and join date without any account at all.
+
+Photo counts are `img[src*="scontent"]` currently in the DOM, so they undercount
+lazy-loaded galleries; treat that row as indicative only.
 
 ## 2. Payload past the first page: still capped (the plan's worst result)
 

@@ -24,6 +24,8 @@ struct ContentView: View {
                     .disabled(!controller.looksSignedIn)
                 Button("Timing") { controller.startTimingTests() }
                     .disabled(!controller.looksSignedIn)
+                Button("Seller") { controller.startSellerSurvey() }
+                    .disabled(!controller.looksSignedIn)
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -152,6 +154,35 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         Task {
             webView.customUserAgent = Self.desktopUA
             await runTimingTests()
+        }
+    }
+
+    func startSellerSurvey() {
+        Task {
+            webView.customUserAgent = Self.desktopUA
+            // One listing showed a seller name and join date but no rating, so
+            // "ratings and stars" is so far an assumption. Spread across
+            // several sellers before anything in the UI depends on it.
+            let ids = ["1054280080442808", "3576979889123241", "1244917550907745",
+                       "1797842328020434", "1624050395351390", "1318664736543676"]
+            // Ratings came back null on every desktop page, which has two very
+            // different explanations: desktop doesn't render them, or these
+            // sellers have none. Mobile is known to show ratings "when
+            // present", so running the same listings on both agents tells the
+            // two apart — a rating on mobile and not desktop is a surface gap;
+            // absent on both means these sellers simply aren't rated.
+            for id in ids {
+                webView.customUserAgent = Self.desktopUA
+                await load("https://www.facebook.com/marketplace/item/\(id)/")
+                try? await Task.sleep(for: .seconds(7))
+                emit("SELLER[d:\(id)] \(await js(Self.sellerFieldsJS))")
+
+                webView.customUserAgent = Self.mobileUA
+                await load("https://www.facebook.com/marketplace/item/\(id)/")
+                try? await Task.sleep(for: .seconds(7))
+                emit("SELLER[m:\(id)] \(await js(Self.sellerFieldsJS))")
+            }
+            emit("=== SELLERSURVEY COMPLETE ===")
         }
     }
 
@@ -2043,6 +2074,8 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         return JSON.stringify({
           joined: (body.match(/Joined Facebook[^]{0,24}/i) || [])[0] || null,
           rating: (body.match(/[0-9]+ ratings?/i) || [])[0] || null,
+          ratingAlt: (body.match(/[0-9](\\.[0-9])? out of 5|[0-9]+ review/i) || [])[0] || null,
+          starIcons: document.querySelectorAll('[aria-label*="star" i], [aria-label*="rating" i]').length,
           sellerHeading: /Seller information/i.test(body),
           profileLinks: document.querySelectorAll('a[href*="/marketplace/profile/"]').length,
           sellerKeyCount: (html.match(/marketplace_listing_seller/g) || []).length,
