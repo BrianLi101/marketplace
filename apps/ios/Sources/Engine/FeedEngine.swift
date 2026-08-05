@@ -37,7 +37,8 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
 
     private var navigationContinuation: CheckedContinuation<Void, Never>?
     private var isResolvingItemURL = false
-    private var restoreTask: Task<Void, Never>?
+    private var isFeedBusy = false
+    private var feedWaiters: [CheckedContinuation<Void, Never>] = []
     private var lastDocHeight: Double = 0
     private var pageIndex = 0
 
@@ -68,6 +69,11 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     // MARK: - Loading
 
     func load(_ query: SearchQuery) async {
+        // A prefetch from the previous search may still be winding down;
+        // cancellation is cooperative, so wait for the webview to be free
+        // rather than navigating out from under it.
+        await acquireFeed()
+        defer { releaseFeed() }
         guard await pacer.waitForSlot() else {
             state = .failed("Paused — too many requests. Try again shortly.")
             return
@@ -137,7 +143,8 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// Reads every card currently in the DOM. Cheap and side-effect free — no
     /// network, so it can be called after each pagination step.
     func extractCards() async -> [RawCard] {
-        await awaitFeedRestored()
+        await acquireFeed()
+        defer { releaseFeed() }
         guard let json = await evaluate(WebLiteScripts.extract),
               let data = json.data(using: .utf8),
               let result = try? JSONDecoder().decode(ExtractResult.self, from: data) else {
@@ -183,7 +190,8 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// exhausted (or the page stopped responding), so callers stop asking.
     @discardableResult
     func loadNextBatch() async -> Bool {
-        await awaitFeedRestored()
+        await acquireFeed()
+        defer { releaseFeed() }
         guard canLoadMore, state == .ready else { return false }
         guard await pacer.waitForSlot() else { return false }
 
@@ -239,8 +247,11 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     ///
     /// `onPartial` fires as soon as there is text to show, seconds before the
     /// gallery resolves. The return value is the most complete read.
+    /// Cancellation is cooperative and checked inside both poll loops, so a
+    /// real tap can preempt an in-flight prefetch within a poll interval
+    /// rather than waiting out a whole harvest.
     func openItem(cardIndex: Int, onPartial: @MainActor (ItemHarvest) -> Void) async -> ItemHarvest? {
-        await awaitFeedRestored()
+        await acquireFeed()
         isResolvingItemURL = true
         defer { isResolvingItemURL = false }
 
@@ -249,7 +260,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
 
         let urlDeadline = clock.now + .seconds(6)
         var found: URL?
-        while clock.now < urlDeadline {
+        while clock.now < urlDeadline, !Task.isCancelled {
             if let href = await evaluateRaw("location.href"),
                href.contains("/marketplace/item/") {
                 found = URL(string: href)
@@ -270,7 +281,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
         var best: ItemHarvest?
         var announced = false
         let harvestDeadline = clock.now + .seconds(8)
-        while clock.now < harvestDeadline {
+        while clock.now < harvestDeadline, !Task.isCancelled {
             if let json = await evaluateRaw(WebLiteScripts.extractDetail),
                let data = json.data(using: .utf8),
                let raw = try? JSONDecoder().decode(RawDetail.self, from: data),
@@ -295,23 +306,44 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     /// Winds the feed back to the results page — *after* the caller has its
-    /// data. Restoring used to sit on the user's critical path for 800ms;
-    /// nothing about it needs to. Verified to restore all 26 cards.
+    /// data — then releases the gate. Restoring used to sit on the user's
+    /// critical path for 800ms; nothing about it needs to. Verified to restore
+    /// all 26 cards.
     private func scheduleFeedRestore() {
-        restoreTask = Task { @MainActor [weak self] in
+        Task { @MainActor [weak self] in
             guard let self else { return }
             _ = await self.evaluateRaw("(function(){ history.back(); return 'back'; })()")
             try? await Task.sleep(for: .milliseconds(800))
+            self.releaseFeed()
         }
     }
 
-    /// The feed webview is briefly parked on an item page after a tap, so
-    /// anything that reads the results page waits for it to come back. The
-    /// user doesn't — that's the whole point.
-    private func awaitFeedRestored() async {
-        guard let task = restoreTask else { return }
-        await task.value
-        restoreTask = nil
+    // MARK: - The feed webview is one resource
+
+    /// It holds the results page, its scroll position and pagination state —
+    /// and, for a couple of seconds after a tap, an *item* page instead.
+    /// Everything that touches it takes this gate first.
+    ///
+    /// The earlier version only waited on the restore task, which is nil for
+    /// the whole harvest. So a `settle()` pass landing mid-tap would run the
+    /// card extractor against an item page and ingest that page's "Today's
+    /// picks" module — other people's listings — straight into the grid.
+    /// Rare when a tap was the only thing that parked the webview; constant
+    /// once prefetching does it on a loop.
+    private func acquireFeed() async {
+        while isFeedBusy {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                feedWaiters.append(cont)
+            }
+        }
+        isFeedBusy = true
+    }
+
+    private func releaseFeed() {
+        isFeedBusy = false
+        let waiting = feedWaiters
+        feedWaiters = []
+        waiting.forEach { $0.resume() }
     }
 
     // MARK: - WKNavigationDelegate

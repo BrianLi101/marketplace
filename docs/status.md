@@ -35,6 +35,30 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
     The user never waits for it.
   - Content is delivered in two stages — text as soon as it exists, photos when
     the gallery resolves — so a slow gallery can't hold back the description.
+- **Prefetching the top 3 cards** (`ListingStore.prefetchDepth`). Warms them the
+  same way a tap does, starting as soon as the feed hydrates. Measured:
+
+  | | |
+  |---|---|
+  | tap on a warmed card | **0.000s**, complete on the first frame |
+  | tap on a cold card | 1.90–2.20s |
+  | all 3 warm | 6.18–6.46s after cards appear |
+  | tap during an in-flight prefetch | **1.90s** — no measurable penalty |
+
+  Preemption is what makes it safe: a tap cancels the prefetch mid-poll (the
+  abandoned one logs `no id`), and the user's own open is unaffected. A tap on
+  the card *currently* being prefetched rides along instead of restarting it.
+
+  **The cost is traffic**: 3 extra item fetches per search, whether or not the
+  user opens anything, and `openItem` does not go through `RequestPacer`. That
+  is the number to revisit if login walls become more frequent — set
+  `prefetchDepth` to 0 to disable.
+- **The feed webview is gated.** It holds the results page, its scroll position,
+  and — for ~2s after a tap — an item page instead. `acquireFeed`/`releaseFeed`
+  serialize every access. Without it a `settle()` pass landing mid-tap would run
+  the *card* extractor against an *item* page and ingest that page's "Today's
+  picks" module as search results. Rare when only taps parked the webview;
+  constant once prefetching does it on a loop.
   - Polls for content rather than sleeping a fixed 1.5s, and doesn't wait for
     `didFinish` — on an item page that waits for every photo to download.
   - Rejects any page whose `location.pathname` id isn't the one requested.

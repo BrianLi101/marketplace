@@ -47,6 +47,8 @@ final class ListingStore: ObservableObject {
         await feed.load(query)
         await ingest(await feed.extractCards())
         isLoadingFirstPage = false
+        // Runs alongside `settle()`; both serialize on the feed webview's gate.
+        startPrefetch()
         await settle()
     }
 
@@ -137,6 +139,62 @@ final class ListingStore: ObservableObject {
 
     // MARK: - Detail
 
+    // MARK: - Prefetch
+
+    /// How many of the top cards to warm before they're tapped.
+    ///
+    /// Each one costs a real item-page fetch against Facebook, so this trades
+    /// login-wall headroom for latency and the number wants to stay small.
+    static let prefetchDepth = 3
+
+    private var prefetchTask: Task<Void, Never>?
+    /// The card currently being opened, as its own task. Unstructured, so
+    /// cancelling the loop above stops it *scheduling more work* without
+    /// killing the fetch already in progress — which is what lets a tap on
+    /// this card ride along instead of starting the same work over.
+    private var inFlight: (cardIndex: Int, task: Task<FeedEngine.ItemHarvest?, Never>)?
+
+    /// Warms the top cards by opening them exactly the way a tap does, then
+    /// caching the result. Serial by necessity — there is one feed webview and
+    /// each open parks it on an item page for a couple of seconds.
+    func startPrefetch(count: Int = ListingStore.prefetchDepth) {
+        cancelPrefetch()
+        let targets = Array(listings.prefix(count))
+        guard !targets.isEmpty else { return }
+
+        prefetchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let began = Date()
+            var warmed = 0
+            for listing in targets {
+                if Task.isCancelled { break }
+                if self.detail.cachedDetail(for: listing.id) != nil { continue }
+
+                let cardStart = Date()
+                let task = Task { @MainActor [weak self] in
+                    await self?.feed.openItem(cardIndex: listing.cardIndex, onPartial: { _ in }) ?? nil
+                }
+                self.inFlight = (listing.cardIndex, task)
+                let harvest = await task.value
+                if self.inFlight?.cardIndex == listing.cardIndex { self.inFlight = nil }
+
+                guard let harvest else { continue }
+                self.detail.cache(harvest.detail.listingDetail, for: listing.id)
+                self.apply(Self.merging(listing, harvest))
+                warmed += 1
+                Logger.store.info("prefetch card \(listing.cardIndex) warm in \(String(format: "%.2f", Date().timeIntervalSince(cardStart)))s")
+            }
+            Logger.store.info("prefetch: \(warmed)/\(targets.count) warm in \(String(format: "%.2f", Date().timeIntervalSince(began)))s")
+        }
+    }
+
+    func cancelPrefetch() {
+        prefetchTask?.cancel()
+        inFlight?.task.cancel()
+        inFlight = nil
+        prefetchTask = nil
+    }
+
     /// Opens a listing. Lazy by construction: nothing here happens for listings
     /// the user never taps.
     ///
@@ -149,19 +207,43 @@ final class ListingStore: ObservableObject {
     /// before the gallery does, and holding it back until both were ready made
     /// the screen look slower than it was.
     func enrich(_ listing: Listing, onStage: @MainActor (Listing) -> Void = { _ in }) async -> Listing {
-        // §3.2 — a revisit inside a session costs nothing at all.
+        let started = Date()
+
+        // A prefetch may be holding the feed webview. If it is fetching *this*
+        // card, ride along — cancelling would throw away work that is already
+        // most of the way to the answer. Stop the loop from queueing more, but
+        // let this one land.
+        if let inFlight, inFlight.cardIndex == listing.cardIndex {
+            prefetchTask?.cancel()
+            if let harvest = await inFlight.task.value {
+                self.inFlight = nil
+                let updated = Self.merging(listing, harvest)
+                detail.cache(harvest.detail.listingDetail, for: updated.id)
+                apply(updated)
+                onStage(updated)
+                Logger.store.info("tap -> joined in-flight prefetch in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+                return updated
+            }
+            self.inFlight = nil
+        } else {
+            // The user's tap outranks a guess about the user's tap.
+            cancelPrefetch()
+        }
+
+        // §3.2 — a revisit inside a session costs nothing at all, and a
+        // successful prefetch arrives here too.
         if let cached = detail.cachedDetail(for: listing.id) {
             var updated = listing
             updated.detail = cached
             if updated.locationText == nil { updated.locationText = cached.locationText }
             apply(updated)
             onStage(updated)
+            Logger.store.info("tap -> cached in \(String(format: "%.3f", Date().timeIntervalSince(started)))s")
             return updated
         }
 
         // Two numbers, because they're the two the user experiences: when
         // words appear, and when the screen is finished.
-        let started = Date()
         if let harvest = await feed.openItem(cardIndex: listing.cardIndex,
                                              onPartial: { partial in
                                                  Logger.store.info("tap -> text in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
