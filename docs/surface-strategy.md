@@ -218,6 +218,45 @@ prices, cities, instant deep links — and mobile is spun up only when the user
 scrolls past ~16 results. Most sessions never leave the first screen, so most
 of the time you get the good surface and the reliable parser.
 
+### 5b. Restated after the 2026-08-05 measurements
+
+C still wins, and for a stronger reason than it was originally argued on. Three
+findings changed the balance:
+
+1. **Filters and sorting exist only on desktop** (`filter-parameters.md`).
+   `sortBy`, `deliveryMethod`, `daysSinceListed`, `itemCondition` and
+   `minPrice`/`maxPrice` all work there and are all stripped on mobile. This is
+   the decisive one: recency, local-vs-shipping and price bounds are the
+   product's actual selection criteria, and mobile cannot express any of them.
+2. **Desktop's filters are server-side**, so its 15 structured results are drawn
+   from the whole filtered corpus rather than being the first 15 of an
+   unfiltered list. Fifteen *correctly selected* listings is a different thing
+   from fifteen arbitrary ones.
+3. **The seam is exact** (§5a), so merging desktop and mobile results is an
+   equality check on the photo key.
+
+**Do not use desktop's dismissal-pagination.** It buys cards 16–39, and those
+carry no payload (§3) — they are exactly as poor as mobile cards, obtained at
+the cost of provoking the undismissable modal. Take desktop's structured 15 and
+go to mobile for depth.
+
+So the division of labour is:
+
+| job | surface | why |
+|---|---|---|
+| the search itself | **desktop** | only surface with filters, sorting and exact timestamps |
+| depth past ~15 | **mobile** | only surface that paginates; merge on the photo key |
+| item detail | **mobile** | seller name, join date, rating, description, photos, coordinates — desktop item pages have none of the seller fields |
+| item ids for mobile cards | **mobile WebSocket** | avoids the ~1.9 s resolve tap (`embedded-payload.md` §5b) |
+
+Radius is unaffected by any of this and remains a client-side filter against
+per-listing coordinates, because no surface honours it (§`filter-parameters.md`).
+
+**The open risk is the login wall**, not the modal. The modal is understood and
+survivable; what is unmeasured is how often sustained desktop querying escalates
+to a full wall. That frequency should be established before desktop becomes the
+default search path, and it cannot be measured without provoking one.
+
 The seam was previously described as the honest wrinkle in C: merging the two
 feeds means recognising when a mobile card is a listing desktop already
 returned, which was thought to need the same fuzzy matching C otherwise
