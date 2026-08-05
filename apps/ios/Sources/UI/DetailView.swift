@@ -15,6 +15,7 @@ struct DetailView: View {
     @State private var current: Listing
     @State private var didFail = false
     @State private var isEnriching = true
+    @State private var showSignIn = false
 
     init(listing: Listing, namespace: Namespace.ID) {
         self.listing = listing
@@ -68,6 +69,32 @@ struct DetailView: View {
                 didFail = enriched.detail == nil
                 isEnriching = false
             }
+        }
+        .sheet(isPresented: $showSignIn) {
+            SignInView {
+                // Signing in doesn't retroactively fill this listing in — the
+                // seller fields were never fetched, because Facebook didn't
+                // render them to an anonymous session. So re-open it against
+                // the new session rather than just closing the sheet.
+                Task { await refetchAfterSignIn() }
+            }
+        }
+    }
+
+    /// Re-reads this listing now that a session exists.
+    ///
+    /// Deliberately bypasses the profile cache: the stored record is real, it
+    /// simply predates the session and has *unknown* seller fields rather than
+    /// absent ones (`CachedProfile.sellerFieldsAreKnown`). Re-fetching is the
+    /// only way to learn them.
+    private func refetchAfterSignIn() async {
+        store.setSession(await SessionState.isSignedIn() ? .authed : .unauthed)
+        guard store.session == .authed else { return }
+        isEnriching = true
+        let refreshed = await store.enrich(current)
+        withAnimation(.easeOut(duration: 0.25)) {
+            current = refreshed
+            isEnriching = false
         }
     }
 
@@ -210,8 +237,46 @@ struct DetailView: View {
         }
     }
 
-    /// Seller identity comes only from the mobile item page. A rating is
-    /// optional even there — plenty of sellers have never been rated — so the
+    /// Facebook only renders seller identity to a signed-in session, so when
+    /// browsing anonymously this section is *unknown* rather than empty.
+    ///
+    /// Saying so is more honest than showing nothing — a blank space reads as
+    /// "this seller has no name or rating", which is exactly the wrong
+    /// conclusion, and it's the one place where signing in has an obvious,
+    /// concrete payoff to point at.
+    @ViewBuilder
+    private var sellerSignInPrompt: some View {
+        Button {
+            showSignIn = true
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "person.crop.circle.badge.questionmark")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Log in to Facebook to see seller details")
+                        .font(.subheadline.weight(.medium))
+                        .multilineTextAlignment(.leading)
+                    Text("Name, rating and how long they've been on Facebook.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal)
+    }
+
+    /// Seller identity requires a signed-in desktop session. A rating is
+    /// optional even then — plenty of sellers have never been rated — so the
     /// stars appear only when there is a real score behind them.
     @ViewBuilder
     private var sellerBlock: some View {
@@ -245,6 +310,11 @@ struct DetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal)
             .padding(.top, 4)
+        } else if store.session == .unauthed, !isEnriching {
+            // Only once enrichment has settled: offering this while the fetch
+            // is still running would flash a "log in" prompt at a signed-in
+            // user a moment before their seller details arrived.
+            sellerSignInPrompt
         }
     }
 
