@@ -1,0 +1,275 @@
+import Foundation
+
+/// JavaScript for the desktop surface.
+///
+/// Desktop is a React app that ships the `MarketplaceSearch` GraphQL response
+/// alongside its markup, so extraction here reads a *payload* rather than
+/// scraping rendered text — which is what makes it worth the 15-result cap.
+///
+/// Written without backslashes wherever possible: these strings cross Swift and
+/// JavaScript escaping, and a stray one has twice produced an opaque
+/// "A JavaScript exception occurred" hiding an otherwise fine result. See
+/// `tools/probe/README.md`.
+enum DesktopScripts {
+
+    /// Every card's payload object from a search page.
+    ///
+    /// Anchors on `"listing":{` inside the feed edges rather than searching for
+    /// `creation_time` globally: item pages and the search page both contain
+    /// payload objects belonging to *other* listings, and position in the
+    /// document is not evidence of ownership.
+    static let extractSearchPayload = """
+    (function(){
+      try {
+        var html = document.documentElement.outerHTML;
+
+        // The markup is JSON escaped inside attributes, so quotes arrive as
+        // \\" and every pattern has to tolerate both forms. Normalising once is
+        // far more reliable than escaping each pattern.
+        var flat = html.split('\\\\"').join('"');
+
+        // Slices past the *key* and then expects the colon, rather than
+        // slicing past `"key":` and searching for one — the latter skips the
+        // separator and then finds a colon inside the value, which returned
+        // null for every field and made the whole extractor silently produce
+        // zero listings against a page holding fifteen.
+        // The colon must be adjacent, or a key appearing inside some other
+        // string would match.
+        function field(block, key) {
+          var needle = '"' + key + '"';
+          var i = block.indexOf(needle);
+          if (i === -1) return null;
+          var rest = block.slice(i + needle.length);
+          var colon = rest.indexOf(':');
+          if (colon === -1 || colon > 3) return null;
+          rest = rest.slice(colon + 1).replace(/^[ ]+/, '');
+          if (rest.charAt(0) === '"') {
+            var end = rest.indexOf('"', 1);
+            return end === -1 ? null : rest.slice(1, end);
+          }
+          var stop = rest.search(/[,}\\]]/);
+          var raw = (stop === -1 ? rest : rest.slice(0, stop)).trim();
+          return raw.length ? raw : null;
+        }
+
+        // JSON in the payload escapes forward slashes, so a photo URI arrives
+        // as `https:\\/\\/scontent…` and will not parse as a URL until they are
+        // put back.
+        function unescapeSlashes(s) {
+          return s ? s.split('\\\\/').join('/') : s;
+        }
+
+        function nested(block, container, key) {
+          var i = block.indexOf('"' + container + '"');
+          if (i === -1) return null;
+          return field(block.slice(i, i + 600), key);
+        }
+
+        function deliveryTypes(block) {
+          var i = block.indexOf('"delivery_types"');
+          if (i === -1) return [];
+          var open = block.indexOf('[', i);
+          var close = block.indexOf(']', open);
+          if (open === -1 || close === -1) return [];
+          var inner = block.slice(open + 1, close);
+          var out = [];
+          inner.split(',').forEach(function(p){
+            var t = p.replace(/["' ]/g, '').trim();
+            if (t) out.push(t);
+          });
+          return out;
+        }
+
+        var out = [], from = 0, guard_ = 0;
+        while (guard_++ < 200) {
+          var start = flat.indexOf('"listing":{', from);
+          if (start === -1) break;
+          from = start + 11;
+          // One card's object is comfortably inside this window; reading
+          // further risks picking up the next card's fields.
+          var block = flat.slice(start, start + 3000);
+
+          var id = field(block, 'id');
+          if (!id || !/^[0-9]{8,}$/.test(id)) continue;
+
+          var photo = unescapeSlashes(nested(block, 'primary_listing_photo', 'uri'));
+          out.push({
+            id: id,
+            title: field(block, 'marketplace_listing_title'),
+            creationTime: parseFloat(field(block, 'creation_time')) || null,
+            priceAmount: nested(block, 'listing_price', 'amount'),
+            priceFormatted: nested(block, 'listing_price', 'formatted_amount'),
+            strikethroughFormatted: nested(block, 'strikethrough_price', 'formatted_amount'),
+            photoURL: photo,
+            photoID: nested(block, 'primary_listing_photo', 'id'),
+            city: nested(block, 'reverse_geocode', 'city'),
+            state: nested(block, 'reverse_geocode', 'state'),
+            cityPageID: nested(block, 'city_page', 'id'),
+            deliveryTypes: deliveryTypes(block),
+            isSold: field(block, 'is_sold') === 'true',
+            isLive: field(block, 'is_live') === 'true',
+            categoryID: field(block, 'marketplace_listing_category_id'),
+            createdWithSellerApp: field(block, 'created_with_seller_app') === 'true'
+          });
+        }
+
+        // Cards rendered but absent from the payload — everything past the
+        // first server-rendered page. Reported so callers can tell "no payload
+        // for this card" from "extraction failed", which look identical
+        // downstream and are not the same problem.
+        var rendered = [], seen = {};
+        var links = document.querySelectorAll('a[href*="/marketplace/item/"]');
+        for (var i = 0; i < links.length; i++) {
+          var h = links[i].getAttribute('href') || '';
+          var k = h.indexOf('/marketplace/item/');
+          if (k === -1) continue;
+          var j = k + 18, rid = '';
+          while (j < h.length) {
+            var c = h.charAt(j);
+            if (c >= '0' && c <= '9') { rid += c; j++; } else { break; }
+          }
+          if (rid.length > 7 && !seen[rid]) { seen[rid] = 1; rendered.push(rid); }
+        }
+
+        return JSON.stringify({
+          listings: out,
+          renderedIDs: rendered,
+          renderedCount: rendered.length,
+          payloadCount: out.length,
+          loginWall: document.body.innerText.indexOf('You must log in') !== -1
+        });
+      } catch (e) {
+        return JSON.stringify({ listings: [], renderedIDs: [], error: String(e.message) });
+      }
+    })()
+    """
+
+    /// An item page's own fields, in the shape `RawDetail` already decodes.
+    ///
+    /// The discriminator is the whole design. Item pages carry ~20 other
+    /// listings' payload objects in the "Today's picks" rail, and every field
+    /// here is read from the object whose id matches the page's own — never the
+    /// nearest match in the document.
+    static func extractDetail(expectedID: String) -> String {
+        """
+        (function(){
+          try {
+            var html = document.documentElement.outerHTML;
+            var flat = html.split('\\\\"').join('"');
+            var body = document.body.innerText || '';
+
+            function firstMatch(re) {
+              var m = body.match(re);
+              return m ? m[0] : null;
+            }
+
+            // The listing's own coordinates: the pair inside the object that
+            // also carries its location text, not the first pair in the page.
+            var lat = null, lng = null;
+            var anchor = flat.indexOf('"location_text"');
+            if (anchor !== -1) {
+              var around = flat.slice(Math.max(0, anchor - 2500), anchor + 500);
+              var lm = around.match(/"latitude":(-?[0-9]+[.][0-9]+)/);
+              var gm = around.match(/"longitude":(-?[0-9]+[.][0-9]+)/);
+              if (lm) lat = lm[1];
+              if (gm) lng = gm[1];
+            }
+
+            var photos = [];
+            var imgs = document.querySelectorAll('img[src*="scontent"]');
+            for (var i = 0; i < imgs.length; i++) {
+              var src = imgs[i].getAttribute('src') || '';
+              if (src.indexOf('rsrc.php') !== -1) continue;
+              if (photos.indexOf(src) === -1) photos.push(src);
+            }
+
+            // Seller identity only exists for a signed-in session. The rating
+            // renders as "(N)" beside star glyphs rather than "N ratings" --
+            // matching the latter is how an earlier survey concluded, wrongly,
+            // that ratings were unavailable everywhere.
+            var sellerName = null, ratingCount = null, ratingScore = null, joined = null;
+            var section = null;
+            var candidates = document.querySelectorAll('div, span');
+            for (var s = 0; s < candidates.length; s++) {
+              var t = (candidates[s].innerText || '').trim();
+              if (t.indexOf('Seller information') === 0 && t.length > 20 && t.length < 400) {
+                section = t; break;
+              }
+            }
+            if (section) {
+              var lines = section.split(String.fromCharCode(10));
+              for (var L = 0; L < lines.length; L++) {
+                var line = lines[L].trim();
+                if (!line || line === 'Seller information' || line === 'Seller details') continue;
+                if (line.indexOf('Joined Facebook') === 0) { joined = line; continue; }
+                if (line.indexOf('Highly rated') === 0) continue;
+                var paren = line.match(/^[(]([0-9]+)[)]$/);
+                if (paren) { ratingCount = paren[1]; continue; }
+                if (!sellerName) sellerName = line;
+              }
+            }
+            var starLabel = null;
+            var labelled = document.querySelectorAll('[aria-label]');
+            for (var a = 0; a < labelled.length && !starLabel; a++) {
+              var lab = labelled[a].getAttribute('aria-label') || '';
+              if (lab.indexOf('out of 5') !== -1) starLabel = lab;
+            }
+            if (starLabel) {
+              var sm = starLabel.match(/([0-9]+([.][0-9]+)?) out of 5/);
+              if (sm) ratingScore = sm[1];
+            }
+
+            // Description comes from the payload rather than rendered text,
+            // because the rendered block is unlabelled on this surface and
+            // sits adjacent to the Today's-picks rail. `redacted_description`
+            // is the listing's own, and it is the field the own-listing
+            // discriminator (`location_text` alongside it) identifies.
+            var description = null;
+            var dk = flat.indexOf('"redacted_description"');
+            if (dk !== -1) {
+              var dblock = flat.slice(dk, dk + 4000);
+              var dm = dblock.match(/"text":"((?:[^"]|\\\\")*)"/);
+              if (dm) description = dm[1].split('\\\\n').join(String.fromCharCode(10));
+            }
+
+            // "Condition" and its value render as adjacent lines in Details.
+            var conditionText = null;
+            var cm = body.match(/Condition[^]{0,3}(New|Used - Like New|Used - Good|Used - Fair)/i);
+            if (cm) conditionText = cm[1];
+
+            var pathID = null;
+            var path = location.pathname;
+            var pk = path.indexOf('/marketplace/item/');
+            if (pk !== -1) {
+              var pj = pk + 18, pid = '';
+              while (pj < path.length) {
+                var pc = path.charAt(pj);
+                if (pc >= '0' && pc <= '9') { pid += pc; pj++; } else { break; }
+              }
+              pathID = pid.length ? pid : null;
+            }
+
+            return JSON.stringify({
+              itemId: pathID,
+              expected: '\(expectedID)',
+              sellerName: sellerName,
+              sellerJoined: joined,
+              sellerRatingText: ratingScore,
+              sellerRatingCount: ratingCount,
+              description: description,
+              photoURLs: photos,
+              postedText: firstMatch(/Listed [^]{0,40}/),
+              conditionText: conditionText,
+              locationText: firstMatch(/[A-Z][A-Za-z .'-]+, [A-Z]{2}/),
+              latitude: lat,
+              longitude: lng,
+              profileLinks: document.querySelectorAll('a[href*="/marketplace/profile/"]').length,
+              loginWall: body.indexOf('You must log in') !== -1
+            });
+          } catch (e) {
+            return JSON.stringify({ error: String(e.message), photoURLs: [], loginWall: false });
+          }
+        })()
+        """
+    }
+}
