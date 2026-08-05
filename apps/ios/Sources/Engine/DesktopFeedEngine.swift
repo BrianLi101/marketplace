@@ -138,6 +138,52 @@ final class DesktopFeedEngine: NSObject, ObservableObject, WKNavigationDelegate 
         return try? JSONDecoder().decode(PayloadResult.self, from: data)
     }
 
+    // MARK: - Pagination
+
+    /// Whether scrolling can produce more results.
+    ///
+    /// Signed out this is false after the first page: the login overlay is up
+    /// from load, pins the document at ~600px, and allows exactly one dismissal
+    /// — after which it returns as a modal with no close control at all. The 24
+    /// extra cards that one dismissal buys carry no payload, so they are no
+    /// better than the mobile feed's and not worth the traffic.
+    var canLoadMore: Bool { session == .authed }
+
+    /// Every card currently rendered, payload or not.
+    ///
+    /// Called repeatedly *during* a scroll rather than once at the end, because
+    /// the desktop feed virtualises: cards are recycled out of the DOM as they
+    /// leave the viewport, so a single read at the bottom returns the last
+    /// window rather than the feed.
+    func renderedCards() async -> [DesktopRawCard] {
+        guard let json = await evaluate(DesktopScripts.extractRenderedCards),
+              let data = json.data(using: .utf8),
+              let result = try? JSONDecoder().decode(RenderedResult.self, from: data)
+        else { return [] }
+        return result.cards
+    }
+
+    private struct RenderedResult: Decodable {
+        let cards: [DesktopRawCard]
+        let count: Int
+    }
+
+    /// Scrolls one screen and reports whether the document grew.
+    ///
+    /// Deliberately one screen at a time with a harvest between: the caller has
+    /// to read the DOM before the cards it just loaded are recycled back out.
+    @discardableResult
+    func scrollOnce() async -> Bool {
+        let before = webView.scrollView.contentSize.height
+        let maxY = max(0, before - webView.scrollView.bounds.height)
+        guard maxY > 10 else { return false }
+        let next = min(webView.scrollView.contentOffset.y + webView.scrollView.bounds.height * 0.85, maxY)
+        webView.scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+        try? await Task.sleep(for: .milliseconds(900))
+        return webView.scrollView.contentSize.height > before + 50
+            || webView.scrollView.contentOffset.y < maxY - 10
+    }
+
     // MARK: - The login overlay
 
     /// Dismisses the "See more on Facebook" overlay if it offers a way out.

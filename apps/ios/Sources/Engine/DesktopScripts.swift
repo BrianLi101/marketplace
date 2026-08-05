@@ -144,6 +144,58 @@ enum DesktopScripts {
     })()
     """
 
+    /// Every rendered card, scraped from the DOM rather than the payload.
+    ///
+    /// This is the tail: past the first server-rendered page there is no payload
+    /// at all, so cards 16-onward can only be read this way. Desktop makes that
+    /// tolerable — its `aria-label` carries title, price, city and the listing
+    /// id in one string:
+    ///
+    ///     "Black L-Shaped Corner Desk with Monitor Shelf, $40, San Francisco, CA, listing 1054280080442808"
+    ///
+    /// so a markup-only card still yields everything a grid needs except the
+    /// exact timestamp and delivery types. Classification stays in Swift.
+    ///
+    /// Must be called repeatedly while scrolling, never once at the end: the
+    /// desktop feed virtualises, recycling cards out of the DOM as they leave
+    /// the viewport, so a single read at the bottom returns the last window
+    /// rather than the feed.
+    static let extractRenderedCards = """
+    (function(){
+      try {
+        var out = [], seen = {};
+        var links = document.querySelectorAll('a[href*="/marketplace/item/"]');
+        for (var i = 0; i < links.length; i++) {
+          var a = links[i];
+          var h = a.getAttribute('href') || '';
+          var k = h.indexOf('/marketplace/item/');
+          if (k === -1) continue;
+          var j = k + 18, id = '';
+          while (j < h.length) {
+            var c = h.charAt(j);
+            if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+          }
+          if (id.length < 8 || seen[id]) continue;
+          seen[id] = 1;
+
+          var img = a.querySelector('img');
+          var src = img ? (img.getAttribute('src') || '') : '';
+          if (src.indexOf('scontent') === -1) src = '';
+
+          out.push({
+            id: id,
+            label: a.getAttribute('aria-label') || '',
+            imageURL: src,
+            text: (a.innerText || '').slice(0, 140)
+          });
+        }
+        return JSON.stringify({ cards: out, count: out.length });
+      } catch (e) {
+        return JSON.stringify({ cards: [], count: 0, error: String(e.message) });
+      }
+    })()
+    """
+
     /// An item page's own fields, in the shape `RawDetail` already decodes.
     ///
     /// The discriminator is the whole design. Item pages carry ~20 other

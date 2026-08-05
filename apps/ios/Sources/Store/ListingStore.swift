@@ -16,6 +16,13 @@ final class ListingStore: ObservableObject {
     @Published private(set) var health = ParseHealth()
     @Published var query: SearchQuery?
 
+    /// The primary search path. Desktop is the only surface with working
+    /// filters and sorting, and the only one that embeds a structured payload —
+    /// see `docs/decision-desktop-primary.md`.
+    let desktop: DesktopFeedEngine
+    /// WebLite, kept and demoted. It is the only fallback if the desktop login
+    /// wall fires, whose frequency under sustained use is still unmeasured, and
+    /// the only surface that paginates without an account.
     let feed: FeedEngine
     let detail: DetailEngine
     private let prefs: Preferences
@@ -45,14 +52,16 @@ final class ListingStore: ObservableObject {
     }
 
     private var capture: CaptureContext {
-        CaptureContext(session: session, surface: .mobile, capturedAt: Date())
+        CaptureContext(session: session, surface: .desktop, capturedAt: Date())
     }
 
-    init(feed: FeedEngine? = nil,
+    init(desktop: DesktopFeedEngine? = nil,
+         feed: FeedEngine? = nil,
          detail: DetailEngine? = nil,
          prefs: Preferences = .shared,
          metrics: MetricsReporter = LocalMetrics.shared,
          cache: ListingCache = .shared) {
+        self.desktop = desktop ?? DesktopFeedEngine()
         self.feed = feed ?? FeedEngine()
         self.detail = detail ?? DetailEngine()
         self.prefs = prefs
@@ -60,8 +69,28 @@ final class ListingStore: ObservableObject {
         self.cache = cache
     }
 
-    var feedState: FeedEngine.LoadState { feed.state }
-    var canLoadMore: Bool { feed.canLoadMore }
+    /// The desktop engine's state, mapped onto the shape the UI already knows.
+    /// `FeedEngine.LoadState` stays the vocabulary because both engines produce
+    /// the same four outcomes and the views shouldn't care which ran.
+    var feedState: FeedEngine.LoadState {
+        switch desktop.state {
+        case .idle: return .idle
+        case .loading: return .loading
+        case .ready: return .ready
+        case .loginWall: return .loginWall
+        case .failed(let message): return .failed(message)
+        }
+    }
+
+    var canLoadMore: Bool { desktop.canLoadMore }
+
+    /// How much of the current grid has structured data behind it.
+    ///
+    /// Surfaced because it is a real property of the results rather than an
+    /// implementation detail: the first ~15 cards carry exact timestamps,
+    /// delivery types and sold state, and everything past them does not, no
+    /// matter how far the feed is scrolled or whether the user is signed in.
+    var payloadCoverage: DesktopFeedEngine.PayloadCoverage { desktop.coverage }
 
     // MARK: - Searching
 
@@ -84,49 +113,45 @@ final class ListingStore: ObservableObject {
             isLoadingFirstPage = true
         }
 
-        await feed.load(query)
-        await ingest(await feed.extractCards())
+        let payload = await desktop.load(query)
+        ingest(payload: payload)
+        // The payload covers the first page only; anything else already
+        // rendered has to be read from the DOM.
+        ingest(cards: await desktop.renderedCards())
         isLoadingFirstPage = false
-        await settle()
         cache.saveResults(listings, for: query, session: session)
     }
-
-    /// WebLite paints cards before it finishes filling them — an image, price
-    /// and title arrive first, and the location line lands a beat later. So
-    /// re-read the DOM a few times and merge in whatever showed up. Costs
-    /// nothing: extraction is JavaScript against a page already loaded.
-    private func settle() async {
-        for delay in Self.settleDelays {
-            try? await Task.sleep(for: delay)
-            guard !listings.isEmpty else { return }
-            await ingest(await feed.extractCards())
-        }
-    }
-
-    /// Cumulative ~25s. WebLite fills a card's location line well after its
-    /// photo, price and title are painted — later than feels reasonable, but
-    /// re-reading is free, and stopping early is why locations went missing.
-    private static let settleDelays: [Duration] = [
-        .milliseconds(1200), .seconds(2), .seconds(4), .seconds(6), .seconds(6), .seconds(6)
-    ]
 
     /// §3.1 — triggered when the user is a few rows from the end, never
     /// speculatively. One batch at a time (§7.3: one page ahead, maximum).
     func loadMoreIfNeeded(currentItem: Listing) async {
-        guard !isLoadingMore, feed.canLoadMore,
+        guard !isLoadingMore, canLoadMore,
               let index = listings.firstIndex(of: currentItem),
               index >= listings.count - 6 else { return }
         await loadMore()
     }
 
+    /// Scrolls the desktop feed one screen at a time, harvesting after each.
+    ///
+    /// Harvesting *between* scrolls rather than once at the end is not
+    /// defensive: the desktop feed virtualises, recycling cards out of the DOM
+    /// as they leave the viewport, so a single read at the bottom returns the
+    /// last window rather than everything loaded on the way there.
+    ///
+    /// Everything gathered here is markup-only — no timestamps, no delivery
+    /// types, no sold state. Those exist for the first page and nowhere else.
     func loadMore() async {
-        guard !isLoadingMore, feed.canLoadMore else { return }
+        guard !isLoadingMore, canLoadMore else { return }
         isLoadingMore = true
         defer { isLoadingMore = false }
-        if await feed.loadNextBatch() {
-            await ingest(await feed.extractCards())
-            try? await Task.sleep(for: .seconds(2))
-            await ingest(await feed.extractCards())   // let the new batch finish filling in
+
+        let before = listings.count
+        for _ in 0..<3 {
+            guard await desktop.scrollOnce() else { break }
+            ingest(cards: await desktop.renderedCards())
+        }
+        if listings.count == before {
+            Logger.store.info("loadMore: no new cards")
         }
     }
 
@@ -142,6 +167,90 @@ final class ListingStore: ObservableObject {
 
     // MARK: - Ingestion
 
+    /// The structured first page: exact timestamps, numeric prices, delivery
+    /// types, sold state.
+    ///
+    /// Runs before `ingest(cards:)` on a fresh search so the richest version of
+    /// each listing lands first and the DOM pass can only fill gaps, never
+    /// overwrite. Both are idempotent on listing identity.
+    private func ingest(payload: [PayloadListing]) {
+        guard !payload.isEmpty else { return }
+        let listingsFromPayload = payload.enumerated().map { index, item in
+            item.makeListing(cardIndex: index)
+        }
+        absorb(listingsFromPayload, replacingCache: isShowingCachedResults)
+    }
+
+    /// The markup tail — everything past the first page, plus anything rendered
+    /// that the payload didn't describe.
+    private func ingest(cards: [DesktopRawCard]) {
+        guard !cards.isEmpty else { return }
+        var parsed: [Listing] = []
+        for (index, card) in cards.enumerated() {
+            guard let listing = DesktopCardParser.parse(card, cardIndex: index) else { continue }
+            parsed.append(listing)
+        }
+        absorb(parsed, replacingCache: isShowingCachedResults && !parsed.isEmpty)
+    }
+
+    /// Merges a batch into the grid: new listings append, known ones fill gaps.
+    private func absorb(_ incoming: [Listing], replacingCache: Bool) {
+        // The first live cards replace the restored ones outright rather than
+        // merging into them, and the replacement is one assignment at the end —
+        // never a clear followed by a refill. `listings` is `@Published` and the
+        // grid renders "Nothing found nearby" on an empty array, so emptying it
+        // even for an instant tears down the grid and pops any listing the user
+        // has open.
+        var seen = replacingCache ? Set<String>() : seenIDs
+
+        var counts = ParseHealth()
+        counts.domCards = incoming.count
+
+        var fresh: [Listing] = []
+        for listing in incoming {
+            counts.extracted += 1
+            counts.fieldCounts["title", default: 0] += listing.title != nil ? 1 : 0
+            counts.fieldCounts["price", default: 0] += listing.priceText != nil ? 1 : 0
+            counts.fieldCounts["thumbnail", default: 0] += listing.thumbnailURL != nil ? 1 : 0
+            counts.fieldCounts["location", default: 0] += listing.locationText != nil ? 1 : 0
+
+            guard !shouldFilter(listing) else {
+                counts.dropped += 1
+                continue
+            }
+            guard !seen.contains(listing.id) else {
+                fillGaps(from: listing)
+                continue
+            }
+            seen.insert(listing.id)
+            // A listing we've fully read before arrives already complete, so its
+            // detail screen opens with everything on the first frame.
+            var seeded = listing
+            if let cached = cache.profile(for: listing.id) {
+                seeded.detail = cached.detail
+                seeded.itemURL = seeded.itemURL ?? cached.itemURL
+                if seeded.locationText == nil { seeded.locationText = cached.detail?.locationText }
+            }
+            fresh.append(seeded)
+        }
+
+        if replacingCache {
+            guard !fresh.isEmpty else { return }   // keep the restored grid
+            isShowingCachedResults = false
+            counts.rendered = fresh.count
+            listings = fresh                       // one assignment, never empty
+        } else {
+            guard !fresh.isEmpty else { return }
+            counts.rendered = listings.count + fresh.count
+            listings.append(contentsOf: fresh)
+        }
+        seenIDs = seen
+        health = counts
+        metrics.parseHealth(counts)
+    }
+
+    /// WebLite ingestion, retained for the demoted mobile path.
+    ///
     /// Extraction returns every card in the DOM each time, so this is
     /// idempotent: known ids are skipped and only genuinely new cards append.
     private func ingest(_ raw: [FeedEngine.RawCard]) async {
@@ -268,13 +377,16 @@ final class ListingStore: ObservableObject {
         return best
     }
 
-    /// The live read, by whichever route can actually reach this listing.
+    /// The live read.
     ///
-    /// Tapping the card is faster and is what an ordinary open uses. But it
-    /// needs a `cardIndex` that matches the DOM, which a restored card does not
-    /// have — and it occupies the feed webview. When the canonical URL is
-    /// already known, loading it directly sidesteps both problems, which is
-    /// exactly the case for anything we've cached.
+    /// On the desktop surface this is almost always the first branch: every card
+    /// carries its canonical URL — from the payload or from its own `href` — so
+    /// opening a listing is a single page load with no resolve step. That is
+    /// what made the 8-listing prefetch redundant, and what makes a tap cost
+    /// ~0.9s to usable data rather than the ~6.5s it once did.
+    ///
+    /// The two fallbacks below belong to the demoted WebLite path, where cards
+    /// carry no id at all. They stay because mobile stays.
     private func fetchLive(_ listing: Listing,
                            startedAt started: Date,
                            onStage: @MainActor (Listing) -> Void) async -> Listing? {

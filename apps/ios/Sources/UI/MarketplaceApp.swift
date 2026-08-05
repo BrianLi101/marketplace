@@ -51,6 +51,8 @@ struct RootView: View {
             // parts of each card (notably the location line) never render at
             // all. So they're laid out at full size and pushed outside the
             // visible area, where WebKit still treats them as live.
+            HiddenWebViewHost(webView: store.desktop.webView)
+                .offset(x: 3000)
             HiddenWebViewHost(webView: store.feed.webView)
                 .offset(x: 3000)
             HiddenWebViewHost(webView: store.detail.webView)
