@@ -246,11 +246,25 @@ enum DesktopScripts {
               if (gm) lng = gm[1];
             }
 
+            // Only this listing's photos.
+            //
+            // Every image in the "Today's picks" rail sits inside an
+            // `a[href*="/marketplace/item/"]` pointing at *another* listing,
+            // while the listing's own gallery is not wrapped in an item link at
+            // all. Measured on a sample page: 25 scontent images, 20 of them
+            // inside such an anchor and belonging to other sellers, 5 outside
+            // and carrying `alt="Product photo of <this title>"`.
+            //
+            // Taking them all is how a mirror's gallery ended up showing a tool
+            // chest — the same neighbour-contamination trap as the coordinates
+            // and the condition, in a new place.
             var photos = [];
             var imgs = document.querySelectorAll('img[src*="scontent"]');
             for (var i = 0; i < imgs.length; i++) {
-              var src = imgs[i].getAttribute('src') || '';
+              var img = imgs[i];
+              var src = img.getAttribute('src') || '';
               if (src.indexOf('rsrc.php') !== -1) continue;
+              if (img.closest && img.closest('a[href*="/marketplace/item/"]')) continue;
               if (photos.indexOf(src) === -1) photos.push(src);
             }
 

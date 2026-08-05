@@ -63,6 +63,47 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         super.init()
         webView.navigationDelegate = self
         webView.customUserAgent = Self.desktopUserAgent
+        blocker = Task { await Self.makeMediaBlocker() }
+    }
+
+    private var blocker: Task<WKContentRuleList?, Never>?
+    private var blockerInstalled = false
+
+    /// Stops this webview downloading media it will never display.
+    ///
+    /// The detail webview is offscreen and exists only to be read: the photos
+    /// the user actually sees are fetched independently by `AsyncImage` from the
+    /// URLs extracted here. So every image byte this page pulls is spent twice
+    /// and shown once — and an item page carries 20-plus of them at full size.
+    ///
+    /// Blocking the *requests* leaves the `<img>` elements and their `src`
+    /// attributes untouched, which is all the extractor reads, so the gallery is
+    /// still recovered in full.
+    private static func makeMediaBlocker() async -> WKContentRuleList? {
+        let rules = """
+        [{"trigger":{"url-filter":".*","resource-type":["image","media","font"]},
+          "action":{"type":"block"}}]
+        """
+        return await withCheckedContinuation { continuation in
+            WKContentRuleListStore.default()?.compileContentRuleList(
+                forIdentifier: "marketplace-no-media",
+                encodedContentRuleList: rules
+            ) { list, error in
+                if let error {
+                    Logger.detail.error("blocker compile failed: \(error.localizedDescription, privacy: .public)")
+                }
+                continuation.resume(returning: list)
+            }
+        }
+    }
+
+    private func installBlockerIfNeeded() async {
+        guard !blockerInstalled else { return }
+        blockerInstalled = true
+        if let list = await blocker?.value {
+            webView.configuration.userContentController.add(list)
+            Logger.detail.info("media blocker installed")
+        }
     }
 
     // MARK: - Resolving a listing's canonical URL
@@ -160,7 +201,12 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
                                     as type: T.Type,
                                     until isReady: (T) -> Bool,
                                     timeout: Duration,
-                                    interval: Duration = .milliseconds(150),
+                                    // 40ms rather than 150ms: the poll is a
+                                    // JavaScript call against an already-loaded
+                                    // page, costing a millisecond or two, and
+                                    // the old interval added up to a sixth of a
+                                    // second of pure waiting to every open.
+                                    interval: Duration = .milliseconds(40),
                                     firstReady: ((T) -> Bool)? = nil,
                                     onFirst: (@MainActor (T) -> Void)? = nil) async -> T? {
         // Yields null while the outgoing document is still in place, so a
@@ -212,6 +258,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         // your community on Marketplace" ended up as a description.
         let expectedID = url.marketplaceItemID
 
+        await installBlockerIfNeeded()
         let slotAt = Date()
         // Desktop, not WebLite. Measured: the mobile item page spent 3.49s of a
         // 3.50s open just hydrating, because WebLite ships components and fills
