@@ -11,6 +11,7 @@ struct ResultsView: View {
     @State private var selected: Listing?
     @State private var showSettings = false
     @State private var showRadiusPicker = false
+    @State private var showSignIn = false
     @Namespace private var heroNamespace
 
     var body: some View {
@@ -33,6 +34,17 @@ struct ResultsView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showSignIn) {
+                SignInView {
+                    // A signed-in query returns a different result set, not
+                    // merely a longer one, so this re-runs rather than
+                    // appending to what's already on screen.
+                    Task {
+                        store.setSession(await SessionState.isSignedIn() ? .authed : .unauthed)
+                        await store.retry()
+                    }
+                }
+            }
             .confirmationDialog("Search radius", isPresented: $showRadiusPicker, titleVisibility: .visible) {
                 ForEach(Preferences.radiusOptions, id: \.self) { km in
                     Button("\(SearchQuery.kilometresToMiles(km)) mi") {
@@ -163,17 +175,54 @@ struct ResultsView: View {
     }
 
     private var grid: some View {
-        StaggeredGrid(items: store.listings, columns: 2, spacing: 12) { listing in
-            ListingCard(listing: listing, namespace: heroNamespace)
-                .onTapGesture { selected = listing }
-                .task { await store.loadMoreIfNeeded(currentItem: listing) }
-        }
-        .padding(.horizontal, 12)
-        .overlay(alignment: .bottom) {
-            if store.isLoadingMore {
-                ProgressView().padding()
+        VStack(spacing: 0) {
+            StaggeredGrid(items: store.listings, columns: 2, spacing: 12) { listing in
+                ListingCard(listing: listing, namespace: heroNamespace)
+                    .onTapGesture { selected = listing }
+                    .task { await store.loadMoreIfNeeded(currentItem: listing) }
+            }
+            .padding(.horizontal, 12)
+            .overlay(alignment: .bottom) {
+                if store.isLoadingMore {
+                    ProgressView().padding()
+                }
+            }
+
+            if store.session == .unauthed, !store.listings.isEmpty {
+                endOfResultsSignIn
             }
         }
+    }
+
+    /// The bottom of an anonymous result set really is the bottom.
+    ///
+    /// Facebook serves about fifteen listings to a signed-out session and then
+    /// blocks scrolling behind a login overlay that can be dismissed exactly
+    /// once — so there is no "keep scrolling" to offer. Without saying so the
+    /// grid just stops, which reads as "that's all there is" rather than
+    /// "that's all we're allowed to show you".
+    private var endOfResultsSignIn: some View {
+        VStack(spacing: 10) {
+            Text("That's everything Facebook shows without an account")
+                .font(.subheadline.weight(.medium))
+                .multilineTextAlignment(.center)
+            Text("Log in to keep scrolling, and to see who's selling.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button { showSignIn = true } label: {
+                Text("Log in to Facebook")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 32)
+        .padding(.top, 28)
+        .padding(.bottom, 20)
     }
 
     // MARK: - Actions

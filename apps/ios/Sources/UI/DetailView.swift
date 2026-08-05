@@ -249,30 +249,36 @@ struct DetailView: View {
         Button {
             showSignIn = true
         } label: {
-            HStack(spacing: 10) {
+            // Icon aligned to the first line of text rather than to the centre
+            // of the whole block: centring floats it into the gap between the
+            // title and the subtitle whenever the title wraps.
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Image(systemName: "person.crop.circle.badge.questionmark")
-                    .font(.title3)
+                    .font(.body)
                     .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Log in to Facebook to see seller details")
-                        .font(.subheadline.weight(.medium))
-                        .multilineTextAlignment(.leading)
-                    Text("Name, rating and how long they've been on Facebook.")
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Log in to see seller details")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Name, rating, and how long they've been on Facebook.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Spacer(minLength: 4)
+                Spacer(minLength: 8)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
-            .padding(12)
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
-        .padding(.horizontal)
+        // No horizontal padding here: the enclosing VStack already applies it,
+        // and adding a second inset made this card visibly narrower than the
+        // description and map it sits between.
     }
 
     /// Seller identity requires a signed-in desktop session. A rating is
@@ -308,7 +314,6 @@ struct DetailView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal)
             .padding(.top, 4)
         } else if store.session == .unauthed, !isEnriching {
             // Only once enrichment has settled: offering this while the fetch
