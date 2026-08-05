@@ -97,7 +97,37 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// `price_ascend` must come back monotonic, `shipping` must lose its city
     /// lines, `radius` must shrink the city set.
     func runTests() async {
-        await runCarryOverTests()
+        await runPayloadTests()
+    }
+
+    /// The desktop search page embeds the `MarketplaceSearch` GraphQL response
+    /// verbatim — one `listing` object per card carrying `creation_time` as a
+    /// unix timestamp, a numeric price, `delivery_types`, `is_sold`, the city's
+    /// place id, and the photo id the app already uses as its identity key.
+    ///
+    /// If mobile embeds the same payload, everything the app wants is available
+    /// on the surface that also paginates, and no filter parameters are needed
+    /// — the sorting and filtering can all happen in Swift. That is the whole
+    /// question here.
+    func runPayloadTests() async {
+        let search = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+        let item = "https://www.facebook.com/marketplace/item/4588862774666491/"
+
+        webView.customUserAgent = Self.mobileUA
+        await load(search)
+        try? await Task.sleep(for: .seconds(10))
+        emit("PAYLOAD[mobile_search] \(await js(Self.payloadProbeJS))")
+
+        await load(item)
+        try? await Task.sleep(for: .seconds(10))
+        emit("PAYLOAD[mobile_item] \(await js(Self.payloadProbeJS))")
+
+        webView.customUserAgent = Self.desktopUA
+        await load(search)
+        try? await Task.sleep(for: .seconds(10))
+        emit("PAYLOAD[desktop_search] \(await js(Self.payloadProbeJS))")
+
+        emit("=== PAYLOADPROBE COMPLETE ===")
     }
 
     func runFilterMatrix() async {
@@ -832,6 +862,54 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
           controlCount: controls.length,
           filterHrefs: params.slice(0, 6),
           headLines: body.split(String.fromCharCode(10)).slice(0, 12)
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Is the GraphQL payload embedded in this page, and how much of it?
+    ///
+    /// Counts rather than samples: one `creation_time` proves nothing (item
+    /// pages carry ~20 belonging to "Today's picks"), but a count matching the
+    /// card count means every card has one.
+    static let payloadProbeJS = """
+    (function(){
+      try {
+        var html = document.documentElement.outerHTML;
+        function count(re) { return (html.match(re) || []).length; }
+
+        // Escaping differs between the raw attribute text and rendered JSON,
+        // so match the bare key and let the count speak.
+        var keys = ['creation_time', 'marketplace_listing_title', 'delivery_types',
+                    'reverse_geocode', 'is_sold', 'listing_price',
+                    'primary_listing_photo', 'strikethrough_price',
+                    'marketplace_listing_seller', 'location_vanity_or_id',
+                    'MarketplaceSearchFeedStoriesEdge', 'redacted_description'];
+        var counts = {};
+        for (var i = 0; i < keys.length; i++) {
+          counts[keys[i]] = count(new RegExp(keys[i], 'g'));
+        }
+
+        // A listing's own creation_time on an item page is the one followed by
+        // location_text; the picks' are followed by primary_listing_photo.
+        var ownStamp = html.match(/creation_time.{0,3}:(\\d{10}),.{0,3}"?location_text/);
+        var anyStamps = (html.match(/creation_time.{0,3}:(\\d{10})/g) || []).length;
+
+        var photos = 0;
+        var imgs = document.querySelectorAll('img');
+        for (var j = 0; j < imgs.length; j++) {
+          var s = imgs[j].getAttribute('src') || '';
+          if (s.indexOf('scontent') !== -1 && s.indexOf('rsrc.php') === -1) photos++;
+        }
+
+        return JSON.stringify({
+          href: location.href,
+          htmlLen: html.length,
+          scriptTags: document.querySelectorAll('script').length,
+          renderedPhotos: photos,
+          stampsTotal: anyStamps,
+          ownStamp: ownStamp ? ownStamp[1] : null,
+          counts: counts
         });
       } catch (e) { return 'ERR ' + String(e.message); }
     })()

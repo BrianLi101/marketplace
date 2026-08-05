@@ -41,6 +41,8 @@ Legend: **yes** · **no** · **~** partial or conditional · **?** not yet verif
 | Dimensions | — | — | yes | — | — | yes |
 | Category breadcrumb | — | — | yes | — | — | yes |
 | **Pagination past first batch** | **yes** (26→50→74→99) | **yes** | n/a | **no** (~16 cap) | **no** (~24 cap) | n/a |
+| **Embedded GraphQL payload** | **no** | **no** | **no** | **yes** (per card) | ? | **yes** |
+| Exact posting timestamp | no | no | **no** | **yes** (`creation_time`) | ? | **yes** |
 | Location settable by URL | **yes** (city slug or place id) | ~ entry point only | n/a | yes | yes | n/a |
 | `radius` URL parameter honoured | **no** (stripped) | **no** (stripped) | n/a | **no** (chip only) | ? | n/a |
 | Sort / filter parameters honoured | **no** (all stripped) | **no** | n/a | **yes** (all but `radius`) | ? | n/a |
@@ -156,6 +158,21 @@ So the app's radius control is decorative, and distance can only be enforced
 client-side against per-listing coordinates. Full matrix in
 `docs/filter-parameters.md`.
 
+**The desktop surface embeds its GraphQL response, and it's a goldmine.** Every
+card on a desktop search page ships a structured `listing` object — exact
+`creation_time` as a unix timestamp, numeric price, `delivery_types`,
+`is_sold`/`is_live`, the city's place id, the untruncated title, and the photo
+FBID the app already uses as its identity key. That removes the need to call
+Facebook's internal GraphQL endpoint at all, which would otherwise mean a
+`doc_id` that rotates every few weeks plus a session-bound CSRF token. There is
+no public Marketplace API and never has been; the official research API is
+cleanroom-only.
+
+Mobile embeds **none** of it — zero occurrences of every key on a page rendering
+26 listings, against 15-of-15 on desktop from the same webview. WebLite ships
+rendered components, not a hydration payload. Details and verification in
+`docs/embedded-payload.md`.
+
 **Freshness and locality trade against each other.** With `radius` dead,
 `sortBy=creation_time_descend` returns a genuinely fresh page — first and last
 of 24 results were listed one and nine hours ago — but drags the geography out
@@ -185,18 +202,20 @@ item — several of these are harder or easier than they look.
 - [ ] Consider per-city fan-out to widen coverage, since radius can't narrow it:
       the same query against neighbouring slugs recentres the results and only
       partly overlaps. Coverage, not precision.
-- [ ] Place ids for cities with no vanity slug (e.g. South San Francisco). A
-      place-id page echoes its own id back in the markup; a slug page doesn't,
-      so "try the slug, verify the header, fall back" is workable.
+- [x] ~~Place ids for cities with no vanity slug (e.g. South San Francisco).~~
+      Solved for free: every card in the desktop payload carries its city's
+      place id at `location.reverse_geocode.city_page.id` (San Francisco =
+      `114952118516947`), so a single search yields the ids of every city it
+      returns. No slug-guessing needed.
 
 **Feed quality**
 
-- [ ] **Order the feed by most recently listed.** Answered, with a catch:
-      `sortBy=creation_time_descend` works and is verified genuinely
-      newest-first, but **only on desktop**, which caps at 15–24 results and
-      can't paginate. Mobile strips it. And because `radius` is dead, strict
-      recency drags the results 60–90 mi out. `daysSinceListed=1` is the better
-      lever — fresh *and* local — but it's equally desktop-only.
+- [ ] **Order the feed by most recently listed.** No longer blocked: the desktop
+      search payload dates **every card** with an exact `creation_time`, so this
+      can be sorted in Swift without opening a single listing
+      (`docs/embedded-payload.md`). The server-side `sortBy=creation_time_descend`
+      also works but is a worse tool — it's desktop-only *and*, because `radius`
+      is dead, it drags results 60–90 mi out. Sort locally instead.
 - [ ] **Decide the surface trade-off**, which is now the gating decision for
       everything in this section: mobile gives depth (paginates indefinitely)
       and seller identity; desktop gives every filter plus listing ids. Options
@@ -204,13 +223,14 @@ item — several of these are harder or easier than they look.
       client-side filtering of the mobile feed on the fields cards already
       carry (price, condition, city — but *not* date).
 - [ ] **Filter out businesses, drop-shippers and custom-order listings.**
-      Shipping listings are now cheap to exclude on desktop —
-      `deliveryMethod=local_pick_up` returned 0 of them, and shipping cards are
-      separately identifiable by an empty city segment in their `aria-label`.
-      Remaining signals for the harder cases: duplicate coordinates across many
-      listings from one seller, seller rating count, repeated titles. The
-      coordinate signal is real — two listings from one seller carry
-      byte-identical coordinates (`docs/data-model.md`).
+      Shipping is now a structured per-card field on desktop: `delivery_types`
+      containing `SHIPPING_ONSITE` marked 24 of 24 cards on a shipping-filtered
+      page and none on a local one, and it distinguishes *ships only* from
+      *ships or collect in person*. `created_with_seller_app` is a plausible
+      business signal but came back `false` everywhere measured, so it's
+      untested. Remaining signals for the harder cases: duplicate coordinates
+      across many listings from one seller, seller rating count, repeated
+      titles (`docs/data-model.md`).
 - [ ] Decide drop vs. badge. "Local marketplace browser" and "ships from three
       states away" are different products.
 
@@ -255,4 +275,5 @@ item — several of these are harder or easier than they look.
 | `docs/surface-strategy.md` | Mobile vs. web trade-off, options, and recommendation |
 | `docs/mobile-location-radius-notes.md` | Why mobile's location and radius don't behave as the URL implies |
 | `docs/filter-parameters.md` | Every sort/filter parameter, which surface honours it, and what's measured |
+| `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isn't worth calling |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |
