@@ -57,6 +57,16 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     override init() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        // Patching fetch/XHR from evaluateJavaScript after first paint is not a
+        // real measurement: the page's own bundle has already run and may hold
+        // a reference to the originals, so "nothing was captured" is
+        // indistinguishable from "the hook was bypassed". Injecting at document
+        // start puts the recorder in place before any page script exists.
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.wireRecorderJS,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         webView.navigationDelegate = self
@@ -97,7 +107,50 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// `price_ascend` must come back monotonic, `shipping` must lose its city
     /// lines, `radius` must shrink the city set.
     func runTests() async {
-        await runPayloadTests()
+        await runWireTests()
+    }
+
+    /// Mobile's *initial* page carries no GraphQL payload. But mobile is the
+    /// surface that paginates, and pagination has to fetch something. If what
+    /// comes back over the wire is JSON, the structured data is reachable on
+    /// the surface with depth after all, and the whole trade-off changes.
+    ///
+    /// Installs a fetch/XHR recorder *after* first paint, then scrolls the real
+    /// scroll view the way `FeedEngine.loadNextBatch` does, and reports the
+    /// content type and shape of everything the page pulled.
+    func runWireTests() async {
+        webView.customUserAgent = Self.mobileUA
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(10))
+
+        // The recorder is already in place from document start, so this window
+        // covers the initial load too.
+        emit("WIRE[initial] \(await js(Self.wireReportJS))")
+        emit("WIRE[before] \(await js(Self.cardCountJS))")
+
+        // If pagination uses no network at all, the obvious remaining
+        // explanation is that the listings were in the first response all
+        // along and scrolling only materialises them. Snapshot the markup now
+        // so it can be searched for listings that have not appeared yet.
+        _ = await js("(function(){ window.__snap = document.documentElement.outerHTML; return window.__snap.length; })()")
+
+        // Same gesture the app uses to paginate: real scroll offsets, paced.
+        let scrollView = webView.scrollView
+        for step in 0..<10 {
+            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.9, maxY)
+            scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+            try? await Task.sleep(for: .milliseconds(900))
+            if step == 4 { emit("WIRE[mid] \(await js(Self.cardCountJS))") }
+        }
+
+        try? await Task.sleep(for: .seconds(3))
+        emit("WIRE[after] \(await js(Self.cardCountJS))")
+        emit("WIRE[captured] \(await js(Self.wireReportJS))")
+        emit("WIRE[preloaded] \(await js(Self.preloadCheckJS))")
+        emit("WIRE[resources] \(await js(Self.resourceTimingJS))")
+
+        emit("=== WIREPROBE COMPLETE ===")
     }
 
     /// The desktop search page embeds the `MarketplaceSearch` GraphQL response
@@ -912,6 +965,195 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
           counts: counts
         });
       } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Wraps `fetch` and `XMLHttpRequest` so every response the page pulls is
+    /// recorded with its content type and whether it contains the payload keys
+    /// the desktop surface ships.
+    static let wireRecorderJS = """
+    (function(){
+      try {
+        if (window.__cap) return 'already installed';
+        window.__cap = [];
+        function note(url, ct, body) {
+          var t = body || '';
+          window.__cap.push({
+            url: String(url).slice(0, 180),
+            ct: String(ct || '').slice(0, 60),
+            len: t.length,
+            creation: t.indexOf('creation_time') !== -1,
+            title: t.indexOf('marketplace_listing_title') !== -1,
+            graphqlish: t.indexOf('__typename') !== -1,
+            htmlish: t.indexOf('data-mcomponent') !== -1 || t.indexOf('<div') !== -1,
+            head: t.slice(0, 160)
+          });
+        }
+
+        var origFetch = window.fetch;
+        window.fetch = function(){
+          var a0 = arguments[0];
+          var url = (a0 && a0.url) ? a0.url : String(a0);
+          var p = origFetch.apply(this, arguments);
+          try {
+            p.then(function(res){
+              try {
+                var ct = res.headers ? res.headers.get('content-type') : '';
+                res.clone().text().then(function(t){ note(url, ct, t); },
+                                       function(){ note(url, ct, ''); });
+              } catch (e) {}
+            }, function(){});
+          } catch (e) {}
+          return p;
+        };
+
+        var oOpen = XMLHttpRequest.prototype.open;
+        var oSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.open = function(m, u){
+          this.__capURL = u;
+          return oOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function(){
+          var x = this;
+          x.addEventListener('load', function(){
+            var t = '';
+            try { t = x.responseText || ''; } catch (e) {}
+            var ct = '';
+            try { ct = x.getResponseHeader('content-type') || ''; } catch (e) {}
+            note(x.__capURL, ct, t);
+          });
+          return oSend.apply(this, arguments);
+        };
+
+        return 'installed';
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    static let wireReportJS = """
+    (function(){
+      try {
+        var cap = window.__cap || [];
+        var withPayload = 0, jsonish = 0, htmlish = 0, bytes = 0;
+        for (var i = 0; i < cap.length; i++) {
+          if (cap[i].creation || cap[i].title) withPayload++;
+          if (cap[i].graphqlish) jsonish++;
+          if (cap[i].htmlish) htmlish++;
+          bytes += cap[i].len;
+        }
+        // Biggest responses first — a pagination batch is large, telemetry is not.
+        var big = cap.slice().sort(function(a, b){ return b.len - a.len; }).slice(0, 6);
+        return JSON.stringify({
+          recorderInstalled: !!window.__cap,
+          requests: cap.length,
+          totalBytes: bytes,
+          anyWithPayloadKeys: withPayload,
+          anyWithTypename: jsonish,
+          anyHtmlShaped: htmlish,
+          biggest: big
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Were the listings that appeared during pagination already in the first
+    /// response? Each fbcdn filename carries a photo id unique to its listing,
+    /// so searching the snapshot for it answers this without ambiguity.
+    static let preloadCheckJS = """
+    (function(){
+      try {
+        var snap = window.__snap || '';
+        var ids = [], titles = [];
+        var imgs = document.querySelectorAll('img');
+        for (var i = 0; i < imgs.length; i++) {
+          var s = imgs[i].getAttribute('src') || '';
+          if (s.indexOf('scontent') === -1 || s.indexOf('rsrc.php') !== -1) continue;
+          // .../<hash>_<photoid>_<hash>_n.jpg -- the middle segment is the id
+          var file = s.split('/').pop().split('?')[0];
+          var parts = file.split('_');
+          ids.push(parts.length > 1 ? parts[1] : file);
+          // A signed photo URL can be reassembled from parts, so its id is weak
+          // evidence. The title is plain text and survives any encoding.
+          var alt = imgs[i].getAttribute('alt') || '';
+          var action = imgs[i].closest ? imgs[i].closest('[data-action-id]') : null;
+          if (!alt && action) alt = action.getAttribute('aria-label') || '';
+          var cut = alt.indexOf(' for sale');
+          titles.push(cut > 8 ? alt.slice(0, cut) : alt.slice(0, 30));
+        }
+        function inSnap(list) {
+          var hit = 0;
+          for (var j = 0; j < list.length; j++) {
+            if (list[j] && list[j].length > 6 && snap.indexOf(list[j]) !== -1) hit++;
+          }
+          return hit;
+        }
+        var earlyIds = ids.slice(0, 26), lateIds = ids.slice(26);
+        var earlyT = titles.slice(0, 26), lateT = titles.slice(26);
+        return JSON.stringify({
+          snapshotLen: snap.length,
+          firstBatch: earlyIds.length,
+          firstBatchPhotoIdInSnapshot: inSnap(earlyIds),
+          firstBatchTitleInSnapshot: inSnap(earlyT),
+          laterBatches: lateIds.length,
+          laterPhotoIdInSnapshot: inSnap(lateIds),
+          laterTitleInSnapshot: inSnap(lateT),
+          sampleLateTitles: lateT.slice(0, 4)
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Hooking `fetch` and `XMLHttpRequest` only finds requests made through
+    /// those two APIs. Resource Timing records every request the page made
+    /// whatever issued it, and tags each with an `initiatorType` — so this
+    /// answers "what transport" without having to guess which API to wrap.
+    static let resourceTimingJS = """
+    (function(){
+      try {
+        var all = performance.getEntriesByType('resource');
+        var byType = {};
+        var docLike = [];
+        for (var i = 0; i < all.length; i++) {
+          var e = all[i];
+          var t = e.initiatorType || 'unknown';
+          byType[t] = (byType[t] || 0) + 1;
+          // Anything that isn't an image or a static asset is a candidate for
+          // carrying listing content.
+          var n = e.name || '';
+          var isImage = n.indexOf('scontent') !== -1 || n.indexOf('.jpg') !== -1 ||
+                        n.indexOf('.png') !== -1 || n.indexOf('.webp') !== -1;
+          if (!isImage && n.indexOf('facebook.com') !== -1) {
+            docLike.push({
+              type: t,
+              size: Math.round(e.transferSize || 0),
+              name: n.replace('https://www.facebook.com', '').slice(0, 150)
+            });
+          }
+        }
+        docLike.sort(function(a, b){ return b.size - a.size; });
+        return JSON.stringify({
+          totalResources: all.length,
+          byInitiatorType: byType,
+          facebookNonImage: docLike.slice(0, 10)
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    static let cardCountJS = """
+    (function(){
+      var imgs = document.querySelectorAll('img'), n = 0;
+      for (var i = 0; i < imgs.length; i++) {
+        var s = imgs[i].getAttribute('src') || '';
+        if (s.indexOf('scontent') !== -1 && s.indexOf('rsrc.php') === -1) n++;
+      }
+      var html = document.documentElement.outerHTML;
+      return JSON.stringify({
+        photos: n,
+        docHeight: document.body.scrollHeight,
+        htmlLen: html.length,
+        creationTimes: (html.match(/creation_time/g) || []).length
+      });
     })()
     """
 

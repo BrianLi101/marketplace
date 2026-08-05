@@ -144,6 +144,73 @@ components, not a React app rehydrating from a GraphQL response. It also
 explains the earlier finding that mobile item pages have no embedded JSON to
 fall back on for condition.
 
+## 5a. Why the payload is absent, and how far that's actually established
+
+The short version: **the two surfaces put the renderer in different places, and
+the payload is only needed where the renderer is.**
+
+Desktop is a React app that re-renders from data on the client — clicking a
+filter rewrites the result grid via `history.pushState` with no page load, which
+is only possible if the client holds the data that produced the grid. So the
+GraphQL response ships alongside the markup. That is what the 124 script tags
+and 68 KB per listing are.
+
+WebLite is the opposite arrangement: the server runs the query, binds the
+results into a component tree, renders it, and ships only the rendered output.
+The client is a thin runtime that displays components and posts an action token
+back when one is tapped. It never re-renders from data because it never holds
+data.
+
+Measured support, rather than inference:
+
+| | mobile | desktop |
+|---|---|---|
+| bytes of HTML per rendered listing | ~7,000 | ~68,000 |
+| `<script>` tags | 25 | 124 |
+
+And the decisive tell is not the size but the **missing identifiers**. Mobile
+carries no listing id anywhere — checked previously against every pattern the
+desktop surface uses, including React internals. A payload merely trimmed for
+bandwidth would keep ids; they are 16 bytes and nearly everything depends on
+them. Their total absence is the signature of a client that was never meant to
+reason about listings at all, which is exactly why card taps are opaque
+`data-action-id` tokens the server resolves.
+
+So the absence looks like an architectural consequence rather than an
+anti-scraping measure. WebLite exists to serve low-bandwidth devices, and a 10×
+reduction per listing is the point of it. The scraping-resistance is a side
+effect.
+
+**Caveat on this section:** the architecture description is an inference from
+observed behaviour, not from anything Meta documents. The measurements above are
+real; the causal story is the most economical explanation of them.
+
+## 5b. Unresolved: what transport pagination uses
+
+Worth recording as a genuine dead end rather than quietly dropping.
+
+Scrolling the mobile feed paginates 26 → 50 → 74 listings, growing the markup
+from 181 KB to 297 KB. Three things were established about that new content:
+
+- It is **not preloaded.** Snapshotting the initial markup and searching it for
+  the later listings found 0 of 48 photo ids and 4 of 48 titles (those four
+  being short generic strings like "Black small desk"). Positive control: 26 of
+  26 photo ids and 25 of 26 titles for the *first* batch were found.
+- It carries **no payload keys** — `creation_time` stays at 0 across all
+  297 KB.
+- It arrives over the network, yet **neither instrument can see the request.**
+  A `fetch`/`XMLHttpRequest` recorder injected at `.atDocumentStart` — before
+  any page script runs — captured **0 requests**. Resource Timing, which records
+  requests whatever API issued them, shows 83 entries: 75 images, 4 CSS, and 4
+  `/ajax/weblite_*_logging/` telemetry beacons of ~380 bytes each. No content
+  request in either.
+
+Something is either clearing the Resource Timing buffer (WebLite demonstrably
+harvests it — `weblite_resources_timing_logging` is one of the four beacons) or
+using a transport neither instrument observes. Not chased further because it
+does not change any decision: whatever the transport, the bytes arriving on
+mobile contain none of the structured data.
+
 ## 6. What this changes
 
 The surface trade-off in `filter-parameters.md` §5 stands, but the desktop side
@@ -171,3 +238,6 @@ listing, because the search response already dates every card.
   `"cursor": null` logged out, which is consistent with the observed hard cap.
 - Does `created_with_seller_app` ever come back `true`, and does it correlate
   with the drop-shipper listings we want to filter?
+- What transport does mobile pagination actually use (§5b)? Answering it would
+  need a proxy or `WKURLSchemeHandler`-level interception rather than anything
+  reachable from inside the page.
