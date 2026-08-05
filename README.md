@@ -42,9 +42,10 @@ Legend: **yes** · **no** · **~** partial or conditional · **?** not yet verif
 | Category breadcrumb | — | — | yes | — | — | yes |
 | **Pagination past first batch** | **yes** (26→50→74→99) | **yes** | n/a | **no** (~16 cap) | **no** (~24 cap) | n/a |
 | Location settable by URL | **yes** (city slug or place id) | ~ entry point only | n/a | yes | yes | n/a |
-| `radius` URL parameter honoured | **no** (stripped) | **no** (stripped) | n/a | yes | ? | n/a |
+| `radius` URL parameter honoured | **no** (stripped) | **no** (stripped) | n/a | **no** (chip only) | ? | n/a |
+| Sort / filter parameters honoured | **no** (all stripped) | **no** | n/a | **yes** (all but `radius`) | ? | n/a |
 | `latitude`/`longitude` honoured | **no** (ignored, falls back to IP) | no | n/a | ? | ? | n/a |
-| Shipping listings mixed in | yes | yes | — | yes | yes | — |
+| Shipping listings mixed in | yes | yes | — | yes, and filterable | yes | — |
 
 Measured from a `WKWebView` on an iPhone 17 Pro simulator, logged out, between
 2026-07-31 and 2026-08-04. "Web" means a desktop user agent — the desktop site
@@ -137,9 +138,30 @@ embedded coordinates. A full record is card aria-label + mobile item page
 listing id.
 
 **Depth and precision are on opposite surfaces.** Mobile paginates
-indefinitely; web caps at ~16 results and doesn't paginate logged out. Web
-honours the `radius` parameter; mobile strips it and falls back to 40 mi, which
-means the app's radius control is currently decorative on the feed.
+indefinitely; web caps at 15–24 results and doesn't paginate logged out
+(scrolling it six times added nothing).
+
+**Filters and sorting are desktop-only, and `radius` works nowhere.** Facebook's
+own desktop controls emit `sortBy`, `deliveryMethod`, `daysSinceListed`,
+`itemCondition`, `minPrice`/`maxPrice` and `radius`; every one of them is
+verified to change the desktop result set except `radius`, which only repaints
+its own chip — `radius=8` and `radius=161` return the same 15 listings, and a
+search labelled "Within 5 mi" comes back with results 60 mi out. Mobile strips
+all of them: twelve URLs, one per parameter, all normalised back to
+`?query=desk` and all returning a byte-identical 26-card page. Neither applying
+a filter on desktop and switching user agent mid-session nor driving mobile's
+own "Distance" chip (an opaque WebLite action with no href) gets round it.
+
+So the app's radius control is decorative, and distance can only be enforced
+client-side against per-listing coordinates. Full matrix in
+`docs/filter-parameters.md`.
+
+**Freshness and locality trade against each other.** With `radius` dead,
+`sortBy=creation_time_descend` returns a genuinely fresh page — first and last
+of 24 results were listed one and nine hours ago — but drags the geography out
+to Stockton, Davis and Sacramento. `daysSinceListed=1` keeps 10 of 15 results in
+the requested city. For a local browser the date filter is the better lever, and
+ordering can be done client-side.
 
 ---
 
@@ -150,30 +172,45 @@ item — several of these are harder or easier than they look.
 
 **Location and radius**
 
-- [ ] **Make location actually work.** Right now the radius control is
-      decorative on the feed: mobile strips the `radius` parameter and falls
-      back to 40 mi, and `latitude`/`longitude` are ignored entirely in favour
-      of the IP-inferred place. Only the city slug or place id in the URL path
-      moves the result set. See `docs/mobile-location-radius-notes.md`.
-- [ ] Decide what the radius control means given the above — filter client-side
-      against per-listing coordinates, or drop the control.
+- [ ] **Make location actually work.** Only the city slug or place id in the URL
+      path moves the result set — `latitude`/`longitude` are ignored in favour of
+      the IP-inferred place, and `radius` is decorative on *both* surfaces
+      (measured 2026-08-04, `docs/filter-parameters.md` §3). Changing city is
+      solved; changing distance is not, and can't be.
+- [ ] **Enforce radius client-side** — it's the only option left. Cards carry a
+      city but no coordinate, so this is either geocoded city centroids at card
+      level (cheap, coarse) or the listing's own coordinate once enriched
+      (accurate, but only for listings already opened). Probably both: filter
+      loosely on the card, precisely on the detail.
+- [ ] Consider per-city fan-out to widen coverage, since radius can't narrow it:
+      the same query against neighbouring slugs recentres the results and only
+      partly overlaps. Coverage, not precision.
 - [ ] Place ids for cities with no vanity slug (e.g. South San Francisco). A
       place-id page echoes its own id back in the markup; a slug page doesn't,
       so "try the slug, verify the header, fall back" is workable.
 
 **Feed quality**
 
-- [ ] **Order the feed by most recently listed.** Unknown whether the surface
-      supports it — no sort parameter has been tested. Item pages only give
-      coarse relative text ("Listed 5 weeks ago"), and cards give no date at
-      all, so if there's no server-side sort this may not be possible without
-      opening every listing.
+- [ ] **Order the feed by most recently listed.** Answered, with a catch:
+      `sortBy=creation_time_descend` works and is verified genuinely
+      newest-first, but **only on desktop**, which caps at 15–24 results and
+      can't paginate. Mobile strips it. And because `radius` is dead, strict
+      recency drags the results 60–90 mi out. `daysSinceListed=1` is the better
+      lever — fresh *and* local — but it's equally desktop-only.
+- [ ] **Decide the surface trade-off**, which is now the gating decision for
+      everything in this section: mobile gives depth (paginates indefinitely)
+      and seller identity; desktop gives every filter plus listing ids. Options
+      are a desktop-backed "filtered search" mode alongside the mobile feed, or
+      client-side filtering of the mobile feed on the fields cards already
+      carry (price, condition, city — but *not* date).
 - [ ] **Filter out businesses, drop-shippers and custom-order listings.**
-      Signals available without extra fetches: shipping-enabled listings (the
-      surface mixes them in and they're already flagged as a known problem),
-      duplicate coordinates across many listings from one seller, seller rating
-      count, repeated titles. The coordinate signal is real — two listings from
-      one seller carry byte-identical coordinates (`docs/data-model.md`).
+      Shipping listings are now cheap to exclude on desktop —
+      `deliveryMethod=local_pick_up` returned 0 of them, and shipping cards are
+      separately identifiable by an empty city segment in their `aria-label`.
+      Remaining signals for the harder cases: duplicate coordinates across many
+      listings from one seller, seller rating count, repeated titles. The
+      coordinate signal is real — two listings from one seller carry
+      byte-identical coordinates (`docs/data-model.md`).
 - [ ] Decide drop vs. badge. "Local marketplace browser" and "ships from three
       states away" are different products.
 
@@ -217,4 +254,5 @@ item — several of these are harder or easier than they look.
 | `docs/status.md` | What's built and verified, and the open gaps |
 | `docs/surface-strategy.md` | Mobile vs. web trade-off, options, and recommendation |
 | `docs/mobile-location-radius-notes.md` | Why mobile's location and radius don't behave as the URL implies |
+| `docs/filter-parameters.md` | Every sort/filter parameter, which surface honours it, and what's measured |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |

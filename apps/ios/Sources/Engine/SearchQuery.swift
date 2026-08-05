@@ -41,8 +41,13 @@ struct SearchQuery: Equatable {
             components.path = "/marketplace/\(citySlug)/\(Self.categorySlug(name))/"
         }
 
-        // Facebook's radius parameter is kilometres, despite the UI showing miles.
-        // Verified to filter server-side.
+        // Kilometres, despite the UI showing miles — but this does not filter
+        // anything. Mobile strips the parameter outright, and desktop only
+        // updates its own chip: `radius=8` and `radius=161` return the same 15
+        // listings, and a "Within 5 mi" search still comes back with results
+        // 60 mi out. Kept because it costs nothing and is the shape Facebook
+        // expects; radius has to be enforced client-side against the
+        // per-listing coordinates. See docs/filter-parameters.md §3.
         items.append(URLQueryItem(name: "radius", value: String(radiusKM)))
 
         // No latitude/longitude: the city slug already anchors the search, and

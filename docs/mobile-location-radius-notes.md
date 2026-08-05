@@ -53,8 +53,14 @@ with Facebook's own chip still reading **40 mi** — not the ~10 mi that 16 km
 implies. The mobile surface normalises the URL and falls back to its default
 radius.
 
-The desktop surface *did* honour `radius` when tested earlier ("· 6 mi" for
-`radius=10`), so this is mobile-specific.
+> **Corrected 2026-08-04.** This section previously said the desktop surface
+> *did* honour `radius`, on the strength of the chip reading "· 6 mi" for
+> `radius=10`. The chip was the only thing that changed. `radius=8` and
+> `radius=161` return the same 15 listings, and `sortBy=price_ascend&radius=8`
+> — chip reading "Within 5 mi" — returns Santa Rosa and Penngrove, 55–60 mi
+> out. Radius is decorative on **both** surfaces. See
+> `filter-parameters.md` §3. Everything else about mobile stripping the
+> parameter stands.
 
 **Consequence for the app: the radius control is currently decorative on the
 feed.** We send `radius=<km>`, mobile discards it, and every search is really
@@ -179,7 +185,10 @@ place-id fallback for misses.
 
 - ~~Does any spelling of the radius parameter survive on the mobile search
   path?~~ **Answered: no.** Slug and place-id searches both render Facebook's
-  chip at the default 40 mi regardless of what is passed (§7).
+  chip at the default 40 mi regardless of what is passed (§7). Nor does any
+  other filter parameter — `sortBy`, `deliveryMethod`, `daysSinceListed`,
+  `itemCondition` and `minPrice`/`maxPrice` are all stripped on mobile, and
+  none survives a desktop-to-mobile session switch (`filter-parameters.md`).
 - Can the location picker be driven in a hidden webview without a login prompt?
   Now **only relevant to radius**, since slugs solve location (§7). Synthetic
   taps do not work on WebLite, so this would need a *visible* picker the user

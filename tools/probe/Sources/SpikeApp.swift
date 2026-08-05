@@ -77,25 +77,98 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.7 Safari/605.1.15"
 
-    /// Three questions the tap finding depends on: does it repeat, is the
-    /// mobile item page extractable, and does history.back() put the feed back?
+    /// Do the desktop filter parameters do anything on mobile?
+    ///
+    /// Desktop's own filter UI produces these names (read off `location.href`
+    /// while driving the real controls, 2026-08-04):
+    ///
+    ///   sortBy=best_match|creation_time_descend|distance_ascend|price_ascend|price_descend
+    ///   deliveryMethod=local_pick_up|shipping
+    ///   daysSinceListed=1|7|30
+    ///   availability=in stock|out of stock
+    ///   itemCondition=new,used_like_new,used_good,used_fair   (comma list)
+    ///   radius=<km>            ("5 miles" produced radius=8)
+    ///   minPrice / maxPrice    (names untested — desktop's inputs wouldn't drive)
+    ///
+    /// The checklist rule that matters here (§6): a parameter that survives
+    /// normalisation is not a parameter that works. Every case therefore
+    /// reports the *result set*, not just the URL, and the assertions are
+    /// chosen so the answer is unambiguous from the cards alone —
+    /// `price_ascend` must come back monotonic, `shipping` must lose its city
+    /// lines, `radius` must shrink the city set.
     func runTests() async {
+        await runCarryOverTests()
+    }
+
+    func runFilterMatrix() async {
         webView.customUserAgent = Self.mobileUA
-        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
-        try? await Task.sleep(for: .seconds(15))
 
-        for idx in [0, 1] {
-            emit("BEFORE[\(idx)] \(await js(Self.feedStateJS))")
-            emit("TAP[\(idx)] \(await js(Self.tapCard(index: idx)))")
-            try? await Task.sleep(for: .seconds(6))
-            emit("ITEM[\(idx)] \(await js(Self.mobileItemDumpJS))")
+        let base = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+        let cases: [(String, String)] = [
+            ("baseline",        base),
+            ("sort_newest",     base + "&sortBy=creation_time_descend"),
+            ("sort_price_asc",  base + "&sortBy=price_ascend"),
+            ("sort_price_desc", base + "&sortBy=price_descend"),
+            ("sort_distance",   base + "&sortBy=distance_ascend"),
+            ("deliv_local",     base + "&deliveryMethod=local_pick_up"),
+            ("deliv_shipping",  base + "&deliveryMethod=shipping"),
+            ("days_1",          base + "&daysSinceListed=1"),
+            ("radius_8",        base + "&radius=8"),
+            ("price_100_200",   base + "&minPrice=100&maxPrice=200"),
+            ("cond_new",        base + "&itemCondition=new"),
+            ("city_sanjose",    "https://www.facebook.com/marketplace/sanjose/search/?query=desk"),
+        ]
 
-            _ = await js("(function(){ history.back(); return 'back'; })()")
-            try? await Task.sleep(for: .seconds(6))
-            emit("BACK[\(idx)] \(await js(Self.feedStateJS))")
+        for (name, url) in cases {
+            await load(url)
+            try? await Task.sleep(for: .seconds(9))
+            emit("FILTER[\(name)] \(await js(Self.filterProbeJS))")
         }
 
-        emit("=== TAPFLOW COMPLETE ===")
+        emit("=== FILTERPROBE COMPLETE ===")
+    }
+
+    /// Mobile discards every filter parameter (above). Two ways round it are
+    /// still open, and both are cheap to test:
+    ///
+    /// 1. **Session carry-over.** Mobile already treats *location* as session
+    ///    state rather than URL state. If filters are stored the same way, then
+    ///    applying one on the desktop surface — which does honour the
+    ///    parameters — and then switching the user agent inside the same
+    ///    webview should leave the filter in force. Same cookie jar, so the
+    ///    server sees one continuous session.
+    /// 2. **The mobile filter UI.** If mobile renders its own controls, what
+    ///    are they — links carrying a URL we could construct, or opaque
+    ///    WebLite actions?
+    ///
+    /// `price_ascend` is the probe filter throughout: monotonic prices are
+    /// unambiguous evidence in a way that "the cards look different" is not.
+    func runCarryOverTests() async {
+        let mobileSearch = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+        let desktopFiltered = mobileSearch + "&sortBy=price_ascend&deliveryMethod=local_pick_up&radius=8"
+
+        // Control: mobile, no filter ever applied in this session.
+        webView.customUserAgent = Self.mobileUA
+        await load(mobileSearch)
+        try? await Task.sleep(for: .seconds(9))
+        emit("CARRY[control] \(await js(Self.filterProbeJS))")
+
+        // Apply the filter where it demonstrably works.
+        webView.customUserAgent = Self.desktopUA
+        await load(desktopFiltered)
+        try? await Task.sleep(for: .seconds(9))
+        emit("CARRY[desktop_applied] \(await js(Self.desktopFilterProbeJS))")
+
+        // Same webview, same cookies, mobile UA, and a URL carrying no filter.
+        webView.customUserAgent = Self.mobileUA
+        await load(mobileSearch)
+        try? await Task.sleep(for: .seconds(9))
+        emit("CARRY[mobile_after] \(await js(Self.filterProbeJS))")
+
+        // What does mobile offer in its own UI?
+        emit("MOBILEUI \(await js(Self.mobileFilterUIJS))")
+
+        emit("=== CARRYPROBE COMPLETE ===")
     }
 
     func extractStrings(_ json: String, key: String) -> [String] {
@@ -613,6 +686,154 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         bodyLen: body.length,
         loginWall: /you must log in|log in to continue|Log In to Facebook/i.test(body)
       });
+    })()
+    """
+
+    /// One search page, reduced to the things a filter would visibly change:
+    /// the URL Facebook settled on, its own location/radius chip, and the
+    /// ordered list of price + city per card.
+    ///
+    /// Prices come off the `aria-label` rather than the rendered text because
+    /// the label is the only place a free listing is distinguishable from an
+    /// unpriced one, and because it carries the city on both search layouts.
+    static let filterProbeJS = """
+    (function(){
+      try {
+        function isPhoto(img) {
+          var src = img.getAttribute('src') || '';
+          return src.indexOf('scontent') !== -1 && src.indexOf('rsrc.php') === -1;
+        }
+        function labelOf(img) {
+          var alt = img.getAttribute('alt');
+          if (alt && alt.length > 12) return alt;
+          var action = img.closest ? img.closest('[data-action-id]') : null;
+          if (action) {
+            var own = action.getAttribute('aria-label');
+            if (own && own.length > 12) return own;
+          }
+          return null;
+        }
+        // "Desk for sale - Used - Good - $75 in Oakland, CA" -> 75
+        // Free listings carry no price segment at all and score 0.
+        function priceOf(label) {
+          var i = label.indexOf('$');
+          if (i === -1) return (label.indexOf('Free ') === 0) ? 0 : null;
+          var n = '';
+          for (var k = i + 1; k < label.length; k++) {
+            var c = label.charAt(k);
+            if (c >= '0' && c <= '9') { n += c; }
+            else if (c === ',') { continue; }
+            else { break; }
+          }
+          return n.length ? parseInt(n, 10) : null;
+        }
+        function cityOf(label) {
+          var i = label.lastIndexOf(' in ');
+          return i === -1 ? null : label.slice(i + 4);
+        }
+
+        var imgs = Array.prototype.slice.call(document.querySelectorAll('img'));
+        var labels = [];
+        for (var i = 0; i < imgs.length; i++) {
+          if (!isPhoto(imgs[i])) continue;
+          var l = labelOf(imgs[i]);
+          if (l) labels.push(l);
+        }
+
+        var prices = [], cities = [];
+        for (var j = 0; j < labels.length; j++) {
+          prices.push(priceOf(labels[j]));
+          var c = cityOf(labels[j]);
+          if (c) cities.push(c);
+        }
+
+        // Monotonicity over the priced cards only: a null is an unparsed
+        // label, not evidence of disorder.
+        function sortedRuns(arr, ascending) {
+          var vals = arr.filter(function(v){ return v !== null; });
+          var bad = 0;
+          for (var k = 1; k < vals.length; k++) {
+            if (ascending ? (vals[k] < vals[k-1]) : (vals[k] > vals[k-1])) bad++;
+          }
+          return vals.length + ':' + bad;
+        }
+
+        var body = document.body.innerText || '';
+        var chip = (body.match(/[A-Za-z .'-]+ . [0-9]+ mi/) || [])[0] || null;
+
+        var uniqueCities = {};
+        for (var m = 0; m < cities.length; m++) { uniqueCities[cities[m]] = 1; }
+
+        return JSON.stringify({
+          href: location.href,
+          chip: chip,
+          cards: labels.length,
+          prices: prices.slice(0, 14),
+          ascViolations: sortedRuns(prices, true),
+          descViolations: sortedRuns(prices, false),
+          cities: Object.keys(uniqueCities),
+          cityLines: cities.length,
+          shipMentions: (body.match(/Ships /g) || []).length,
+          first3: labels.slice(0, 3),
+          loginWall: /you must log in|log in to continue/i.test(body)
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// What filter controls, if any, does the mobile surface render — and are
+    /// they navigable (an href we could construct ourselves) or opaque WebLite
+    /// actions (which would need a visible webview and a real user tap)?
+    static let mobileFilterUIJS = """
+    (function(){
+      try {
+        var body = document.body.innerText || '';
+        var words = ['Filter', 'Sort', 'Radius', 'Distance', 'Delivery', 'Condition',
+                     'Price', 'Date listed', 'Availability', 'mi', 'Location'];
+        var present = [];
+        for (var i = 0; i < words.length; i++) {
+          if (body.indexOf(words[i]) !== -1) present.push(words[i]);
+        }
+
+        // Anything clickable whose label looks like a filter control.
+        var controls = [];
+        var nodes = document.querySelectorAll('[data-action-id], a, button, [role=button]');
+        for (var j = 0; j < nodes.length; j++) {
+          var el = nodes[j];
+          var t = ((el.innerText || el.getAttribute('aria-label') || '')).trim();
+          if (!t || t.length > 40) continue;
+          var hit = false;
+          for (var k = 0; k < words.length; k++) {
+            if (t.indexOf(words[k]) !== -1) { hit = true; break; }
+          }
+          if (!hit) continue;
+          controls.push({
+            tag: el.tagName,
+            text: t,
+            href: el.getAttribute('href'),
+            actionId: el.getAttribute('data-action-id') ? 'yes' : null
+          });
+        }
+
+        // Do any hrefs on this page carry filter parameters we could reuse?
+        var params = [];
+        var links = document.querySelectorAll('a[href]');
+        for (var m = 0; m < links.length; m++) {
+          var h = links[m].getAttribute('href') || '';
+          if (h.indexOf('sortBy') !== -1 || h.indexOf('deliveryMethod') !== -1 ||
+              h.indexOf('radius') !== -1 || h.indexOf('daysSinceListed') !== -1) {
+            params.push(h.slice(0, 160));
+          }
+        }
+
+        return JSON.stringify({
+          wordsInBody: present,
+          controls: controls.slice(0, 20),
+          controlCount: controls.length,
+          filterHrefs: params.slice(0, 6),
+          headLines: body.split(String.fromCharCode(10)).slice(0, 12)
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """
 
@@ -1317,7 +1538,8 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     })()
     """
 
-    static let filterProbeJS = """
+    /// Desktop-only: keys off item anchors, which mobile doesn't have.
+    static let desktopFilterProbeJS = """
     (function(){
       var links = Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'));
       var prices = [];
