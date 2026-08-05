@@ -7,6 +7,7 @@ struct MarketplaceApp: App {
     @StateObject private var prefs = Preferences.shared
     @StateObject private var location = LocationProvider()
     @StateObject private var distances = DistanceResolver.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -15,6 +16,13 @@ struct MarketplaceApp: App {
                 .environmentObject(prefs)
                 .environmentObject(location)
                 .environmentObject(distances)
+        }
+        // Cache writes are coalesced on a 2s debounce, which is right for a
+        // burst of prefetches and wrong for an app about to be killed. Leaving
+        // the foreground is the last reliable moment to get it to disk.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase != .active else { return }
+            Task { await ListingCache.shared.writeToDisk() }
         }
     }
 }

@@ -35,24 +35,59 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
     The user never waits for it.
   - Content is delivered in two stages — text as soon as it exists, photos when
     the gallery resolves — so a slow gallery can't hold back the description.
-- **Prefetching the top 3 cards** (`ListingStore.prefetchDepth`). Warms them the
+- **On-device persistence** (`ListingCache`), two stores with different jobs:
+
+  | | |
+  |---|---|
+  | **launch → cards, cached** | **1.10s** — essentially just process start |
+  | launch → cards, cold | 5.13s |
+  | tap → cached profile painted | **0.000s** |
+  | tap → live revalidation done | 3.89s |
+
+  *Last result set* — the cards from the most recent search, restored on the
+  first frame for the same query only. A grid restored under a different search
+  term would be actively misleading.
+
+  *Listing profiles* — full detail for listings actually opened, capped at 1000
+  and evicted least-recently-used (`usedAt` is touched on read, so what survives
+  is what's being looked at, not merely what's newest). Measured ~5.7KB each, so
+  ~5.6MB at the ceiling; the load is synchronous at launch, which is worth
+  watching if the cap ever rises.
+
+  Both live in memory and mirror to disk: tap-path reads are synchronous, writes
+  are coalesced on a 2s debounce and flushed on scene-phase change, since a
+  debounce is wrong for an app about to be killed.
+
+  **A cached profile is never the answer.** Every tap revalidates live, because
+  price and sold status are exactly what goes stale in a cache and exactly what
+  someone opening a listing needs to be right.
+  - Revalidation prefers loading the known item URL directly over tapping the
+    card. Tapping needs a `cardIndex` that matches the live DOM — which a
+    restored card does not have — and it occupies the feed webview.
+  - The first live cards **replace** restored ones outright rather than merging.
+    Merging would keep last session's `cardIndex`, now pointing at a different
+    card, and a tap would open the wrong listing. Detail isn't lost: `ingest`
+    re-seeds it from the profile store.
+- **Prefetching the top 8 cards** (`ListingStore.prefetchDepth`). Warms them the
   same way a tap does, starting as soon as the feed hydrates. Measured:
 
   | | |
   |---|---|
   | tap on a warmed card | **0.000s**, complete on the first frame |
   | tap on a cold card | 1.90–2.20s |
-  | all 3 warm | 6.18–6.46s after cards appear |
+  | all 8 warm | 23.6s after cards appear (6.2s for 3) |
   | tap during an in-flight prefetch | **1.90s** — no measurable penalty |
 
   Preemption is what makes it safe: a tap cancels the prefetch mid-poll (the
   abandoned one logs `no id`), and the user's own open is unaffected. A tap on
   the card *currently* being prefetched rides along instead of restarting it.
 
-  **The cost is traffic**: 3 extra item fetches per search, whether or not the
-  user opens anything, and `openItem` does not go through `RequestPacer`. That
-  is the number to revisit if login walls become more frequent — set
-  `prefetchDepth` to 0 to disable.
+  **The cost is traffic**: up to 8 extra item fetches per search, whether or not
+  the user opens anything, and `openItem` does not go through `RequestPacer`.
+  That is the number to revisit if login walls become more frequent — set
+  `prefetchDepth` to 0 to disable. The profile store blunts it on repeat runs:
+  anything already on disk is skipped, so a second run of the same search only
+  pays for cards it has never read.
 - **The feed webview is gated.** It holds the results page, its scroll position,
   and — for ~2s after a tap — an item page instead. `acquireFeed`/`releaseFeed`
   serialize every access. Without it a `settle()` pass landing mid-tap would run

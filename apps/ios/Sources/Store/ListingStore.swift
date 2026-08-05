@@ -20,16 +20,23 @@ final class ListingStore: ObservableObject {
     let detail: DetailEngine
     private let prefs: Preferences
     private let metrics: MetricsReporter
+    private let cache: ListingCache
     private var seenIDs = Set<String>()
+    /// True while the grid is showing last session's cards. They render on the
+    /// first frame, but their `cardIndex` refers to a DOM that no longer
+    /// exists, so nothing may tap through them until live cards replace them.
+    private(set) var isShowingCachedResults = false
 
     init(feed: FeedEngine? = nil,
          detail: DetailEngine? = nil,
          prefs: Preferences = .shared,
-         metrics: MetricsReporter = LocalMetrics.shared) {
+         metrics: MetricsReporter = LocalMetrics.shared,
+         cache: ListingCache = .shared) {
         self.feed = feed ?? FeedEngine()
         self.detail = detail ?? DetailEngine()
         self.prefs = prefs
         self.metrics = metrics
+        self.cache = cache
     }
 
     var feedState: FeedEngine.LoadState { feed.state }
@@ -39,10 +46,23 @@ final class ListingStore: ObservableObject {
 
     func run(_ query: SearchQuery) async {
         self.query = query
-        isLoadingFirstPage = true
         listings = []
         seenIDs = []
         health = ParseHealth()
+        cancelPrefetch()
+
+        // Last session's cards for this exact query, on the first frame. The
+        // live load underneath takes 5.13s to produce anything; there is no
+        // reason to show a skeleton for it when we know what was there.
+        if let cached = cache.results(for: query) {
+            listings = cached
+            seenIDs = Set(cached.map(\.id))
+            isShowingCachedResults = true
+            isLoadingFirstPage = false
+            Logger.store.info("restored \(cached.count) cards from cache")
+        } else {
+            isLoadingFirstPage = true
+        }
 
         await feed.load(query)
         await ingest(await feed.extractCards())
@@ -50,6 +70,7 @@ final class ListingStore: ObservableObject {
         // Runs alongside `settle()`; both serialize on the feed webview's gate.
         startPrefetch()
         await settle()
+        cache.saveResults(listings, for: query)
     }
 
     /// WebLite paints cards before it finishes filling them — an image, price
@@ -101,6 +122,17 @@ final class ListingStore: ObservableObject {
     /// Extraction returns every card in the DOM each time, so this is
     /// idempotent: known ids are skipped and only genuinely new cards append.
     private func ingest(_ raw: [FeedEngine.RawCard]) async {
+        // The first live cards replace the restored ones outright rather than
+        // merging into them. Merging would keep last session's `cardIndex`,
+        // which now points at a different card — or at nothing — and a tap
+        // would open the wrong listing. Detail already fetched isn't lost: it
+        // comes back out of the profile cache below.
+        if isShowingCachedResults, !raw.isEmpty {
+            isShowingCachedResults = false
+            listings = []
+            seenIDs = []
+        }
+
         var counts = ParseHealth()
         counts.domCards = raw.count
 
@@ -122,7 +154,15 @@ final class ListingStore: ObservableObject {
                 continue
             }
             seenIDs.insert(listing.id)
-            fresh.append(listing)
+            // A card we've fully read before arrives already complete, so its
+            // detail screen opens with everything on the first frame.
+            var seeded = listing
+            if let cached = cache.profile(for: listing.id) {
+                seeded.detail = cached.detail
+                seeded.itemURL = cached.itemURL
+                if seeded.locationText == nil { seeded.locationText = cached.detail.locationText }
+            }
+            fresh.append(seeded)
         }
 
         counts.rendered = listings.count + fresh.count
@@ -144,8 +184,12 @@ final class ListingStore: ObservableObject {
     /// How many of the top cards to warm before they're tapped.
     ///
     /// Each one costs a real item-page fetch against Facebook, so this trades
-    /// login-wall headroom for latency and the number wants to stay small.
-    static let prefetchDepth = 3
+    /// login-wall headroom for latency.
+    ///
+    /// Eight rather than three because the profile store makes repeat launches
+    /// nearly free: anything already cached is skipped, so a second run of the
+    /// same search only pays for cards it has never read.
+    static let prefetchDepth = 8
 
     private var prefetchTask: Task<Void, Never>?
     /// The card currently being opened, as its own task. Unstructured, so
@@ -166,9 +210,16 @@ final class ListingStore: ObservableObject {
             guard let self else { return }
             let began = Date()
             var warmed = 0
+            var skipped = 0
             for listing in targets {
                 if Task.isCancelled { break }
-                if self.detail.cachedDetail(for: listing.id) != nil { continue }
+                // Already on disk from an earlier session. Revalidation is the
+                // tap's job — spending a fetch here would burn the traffic
+                // budget on something the user may never open.
+                if self.cache.profile(for: listing.id) != nil {
+                    skipped += 1
+                    continue
+                }
 
                 let cardStart = Date()
                 let task = Task { @MainActor [weak self] in
@@ -179,12 +230,12 @@ final class ListingStore: ObservableObject {
                 if self.inFlight?.cardIndex == listing.cardIndex { self.inFlight = nil }
 
                 guard let harvest else { continue }
-                self.detail.cache(harvest.detail.listingDetail, for: listing.id)
-                self.apply(Self.merging(listing, harvest))
+                self.record(Self.merging(listing, harvest))
                 warmed += 1
                 Logger.store.info("prefetch card \(listing.cardIndex) warm in \(String(format: "%.2f", Date().timeIntervalSince(cardStart)))s")
             }
-            Logger.store.info("prefetch: \(warmed)/\(targets.count) warm in \(String(format: "%.2f", Date().timeIntervalSince(began)))s")
+            Logger.store.info("prefetch: \(warmed) warmed, \(skipped) already cached, of \(targets.count) in \(String(format: "%.2f", Date().timeIntervalSince(began)))s")
+            if let query = self.query { self.cache.saveResults(self.listings, for: query) }
         }
     }
 
@@ -195,34 +246,36 @@ final class ListingStore: ObservableObject {
         prefetchTask = nil
     }
 
-    /// Opens a listing. Lazy by construction: nothing here happens for listings
-    /// the user never taps.
+    /// Opens a listing, in three steps:
     ///
-    /// The tap that resolves the item id also *lands* the feed webview on the
-    /// item page, with the whole document already in its DOM, so the detail is
-    /// harvested there. Loading the page a second time through `DetailEngine`
-    /// is now the fallback for cards the tap can't reach.
+    ///  1. The caller has already painted the card's own fields — price, title,
+    ///     photo, city, condition — so the screen is never empty.
+    ///  2. If we've fully read this listing before, that profile paints now,
+    ///     from disk, on the first frame.
+    ///  3. Either way we refetch it live. A cached profile is a head start, not
+    ///     an answer: price drops and sold status are exactly the things that
+    ///     change while a listing sits in a cache, and they're the things
+    ///     someone opening a listing most needs to be right.
     ///
-    /// `onStage` can fire more than once. The description arrives seconds
-    /// before the gallery does, and holding it back until both were ready made
-    /// the screen look slower than it was.
+    /// `onStage` therefore fires up to three times. Every stage is built from
+    /// the original card rather than accumulated, so a late partial can't
+    /// interleave with an earlier one into a state neither of them described.
     func enrich(_ listing: Listing, onStage: @MainActor (Listing) -> Void = { _ in }) async -> Listing {
         let started = Date()
+        var best = listing
 
         // A prefetch may be holding the feed webview. If it is fetching *this*
-        // card, ride along — cancelling would throw away work that is already
-        // most of the way to the answer. Stop the loop from queueing more, but
-        // let this one land.
+        // card, ride along — cancelling would throw away work already most of
+        // the way to the answer. Stop the loop queueing more, but let it land.
         if let inFlight, inFlight.cardIndex == listing.cardIndex {
             prefetchTask?.cancel()
             if let harvest = await inFlight.task.value {
                 self.inFlight = nil
-                let updated = Self.merging(listing, harvest)
-                detail.cache(harvest.detail.listingDetail, for: updated.id)
-                apply(updated)
-                onStage(updated)
+                best = Self.merging(listing, harvest)
+                record(best)
+                onStage(best)
                 Logger.store.info("tap -> joined in-flight prefetch in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
-                return updated
+                return best
             }
             self.inFlight = nil
         } else {
@@ -230,20 +283,47 @@ final class ListingStore: ObservableObject {
             cancelPrefetch()
         }
 
-        // §3.2 — a revisit inside a session costs nothing at all, and a
-        // successful prefetch arrives here too.
-        if let cached = detail.cachedDetail(for: listing.id) {
+        // Step 2 — the local profile store.
+        if let cached = cache.profile(for: listing.id) {
+            best.detail = cached.detail
+            best.itemURL = best.itemURL ?? cached.itemURL
+            if best.locationText == nil { best.locationText = cached.detail.locationText }
+            apply(best)
+            onStage(best)
+            Logger.store.info("tap -> cache in \(String(format: "%.3f", Date().timeIntervalSince(started)))s (age \(Int(Date().timeIntervalSince(cached.fetchedAt)))s)")
+        }
+
+        // Step 3 — revalidate live, always.
+        if let fresh = await fetchLive(best, startedAt: started, onStage: onStage) {
+            best = fresh
+        }
+        return best
+    }
+
+    /// The live read, by whichever route can actually reach this listing.
+    ///
+    /// Tapping the card is faster and is what an ordinary open uses. But it
+    /// needs a `cardIndex` that matches the DOM, which a restored card does not
+    /// have — and it occupies the feed webview. When the canonical URL is
+    /// already known, loading it directly sidesteps both problems, which is
+    /// exactly the case for anything we've cached.
+    private func fetchLive(_ listing: Listing,
+                           startedAt started: Date,
+                           onStage: @MainActor (Listing) -> Void) async -> Listing? {
+        if let url = listing.itemURL {
+            guard let detailValue = await detail.loadDetail(id: listing.id, url: url) else { return nil }
             var updated = listing
-            updated.detail = cached
-            if updated.locationText == nil { updated.locationText = cached.locationText }
-            apply(updated)
+            updated.detail = detailValue
+            if updated.locationText == nil { updated.locationText = detailValue.locationText }
+            record(updated)
             onStage(updated)
-            Logger.store.info("tap -> cached in \(String(format: "%.3f", Date().timeIntervalSince(started)))s")
+            Logger.store.info("tap -> revalidated in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
             return updated
         }
 
-        // Two numbers, because they're the two the user experiences: when
-        // words appear, and when the screen is finished.
+        // No URL yet, and the card index is only meaningful against live cards.
+        guard !isShowingCachedResults else { return nil }
+
         if let harvest = await feed.openItem(cardIndex: listing.cardIndex,
                                              onPartial: { partial in
                                                  Logger.store.info("tap -> text in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
@@ -252,8 +332,7 @@ final class ListingStore: ObservableObject {
             let updated = Self.merging(listing, harvest)
             metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: true)
             Logger.store.info("tap -> complete in \(String(format: "%.2f", Date().timeIntervalSince(started)))s (harvested in place)")
-            detail.cache(harvest.detail.listingDetail, for: updated.id)
-            apply(updated)
+            record(updated)
             onStage(updated)
             return updated
         }
@@ -263,20 +342,21 @@ final class ListingStore: ObservableObject {
         // 6-character title, and can pick wrong among ties, which is why it is
         // no longer the path anyone takes on purpose.
         var updated = listing
-        if updated.itemURL == nil {
-            updated.itemURL = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
-            apply(updated)
-        }
-        guard let url = updated.itemURL else { return updated }
-
-        if let detailValue = await detail.loadDetail(id: updated.id, url: url) {
-            updated.detail = detailValue
-            // §3.2 — never replace text that's already correct; only fill gaps.
-            if updated.locationText == nil { updated.locationText = detailValue.locationText }
-            apply(updated)
-            onStage(updated)
-        }
+        updated.itemURL = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
+        guard let url = updated.itemURL else { return nil }
+        guard let detailValue = await detail.loadDetail(id: updated.id, url: url) else { return nil }
+        updated.detail = detailValue
+        if updated.locationText == nil { updated.locationText = detailValue.locationText }
+        record(updated)
+        onStage(updated)
         return updated
+    }
+
+    /// Writes a fully-read listing to both the grid and the profile store.
+    private func record(_ listing: Listing) {
+        guard let detailValue = listing.detail else { return }
+        cache.store(detailValue, itemURL: listing.itemURL, for: listing.id)
+        apply(listing)
     }
 
     /// Folds a harvest onto the card the user tapped. Built from the original

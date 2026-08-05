@@ -23,7 +23,6 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     private let metrics: MetricsReporter
     private let pacer: RequestPacer
 
-    private var cache: [String: ListingDetail] = [:]   // §3.2 — session cache, back-then-forward is instant
 
     /// The desktop surface is used here, not the mobile one. It caps search
     /// results at 15 with no pagination — irrelevant for a lookup — but unlike
@@ -159,17 +158,14 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         return latest
     }
 
-    func cachedDetail(for id: String) -> ListingDetail? { cache[id] }
-
-    /// §3.2 — the session cache is keyed by listing, not by who fetched it, so
-    /// a detail harvested from the feed webview during a tap makes a later
-    /// revisit just as instant as one this engine loaded itself.
-    func cache(_ detail: ListingDetail, for id: String) { cache[id] = detail }
-
     /// §3.2 — the preview is the screen; this only ever enhances it. Failure is
     /// quiet and the caller keeps showing what it already had.
+    ///
+    /// Deliberately uncached. Caching moved to `ListingCache`, which persists
+    /// across launches — and every call that reaches here is now a *revalidation*,
+    /// asked for precisely because the caller already has a cached copy and
+    /// wants to know whether the price or the sold status has moved.
     func loadDetail(id: String, url: URL) async -> ListingDetail? {
-        if let cached = cache[id] { return cached }
         let started = Date()
         guard await pacer.waitForSlot() else { return nil }
 
@@ -208,10 +204,8 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         }
         await pacer.recordSuccess()
 
-        let detail = raw.listingDetail
-        cache[id] = detail
         metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: true)
-        return detail
+        return raw.listingDetail
     }
 
     /// Facebook prints a seller's score as "4.8 (12)" — the star average and
