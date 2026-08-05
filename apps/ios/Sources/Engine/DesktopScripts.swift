@@ -35,6 +35,31 @@ enum DesktopScripts {
         // zero listings against a page holding fifteen.
         // The colon must be adjacent, or a key appearing inside some other
         // string would match.
+        // Reads a JSON string body starting at its opening quote, honouring
+        // escapes. Scanning for the next bare quote instead would truncate any
+        // value containing one -- and titles routinely do, because Facebook
+        // stores dimensions as 10x7'9".
+        function readString(s) {
+          var out = '', i = 1;
+          while (i < s.length) {
+            var c = s.charAt(i);
+            if (c === '\\\\') { out += c + s.charAt(i + 1); i += 2; continue; }
+            if (c === '"') break;
+            out += c;
+            i++;
+          }
+          return out;
+        }
+
+        // These values are JSON string bodies, so they still carry \\uXXXX,
+        // \\n and friends. Round-tripping through JSON.parse decodes the lot in
+        // one step; without it a title renders literally as
+        // "10x7\\u20199\\u201d Rug" instead of 10x7'9" Rug.
+        function decode(s) {
+          if (s === null || s === undefined) return null;
+          try { return JSON.parse('"' + s + '"'); } catch (e) { return s; }
+        }
+
         function field(block, key) {
           var needle = '"' + key + '"';
           var i = block.indexOf(needle);
@@ -44,19 +69,11 @@ enum DesktopScripts {
           if (colon === -1 || colon > 3) return null;
           rest = rest.slice(colon + 1).replace(/^[ ]+/, '');
           if (rest.charAt(0) === '"') {
-            var end = rest.indexOf('"', 1);
-            return end === -1 ? null : rest.slice(1, end);
+            return decode(readString(rest));
           }
           var stop = rest.search(/[,}\\]]/);
           var raw = (stop === -1 ? rest : rest.slice(0, stop)).trim();
           return raw.length ? raw : null;
-        }
-
-        // JSON in the payload escapes forward slashes, so a photo URI arrives
-        // as `https:\\/\\/scontent…` and will not parse as a URL until they are
-        // put back.
-        function unescapeSlashes(s) {
-          return s ? s.split('\\\\/').join('/') : s;
         }
 
         function nested(block, container, key) {
@@ -92,7 +109,9 @@ enum DesktopScripts {
           var id = field(block, 'id');
           if (!id || !/^[0-9]{8,}$/.test(id)) continue;
 
-          var photo = unescapeSlashes(nested(block, 'primary_listing_photo', 'uri'));
+          // `decode` already turned the JSON's escaped forward slashes back
+          // into real ones, so the URI is usable as-is.
+          var photo = nested(block, 'primary_listing_photo', 'uri');
           out.push({
             id: id,
             title: field(block, 'marketplace_listing_title'),
@@ -276,12 +295,35 @@ enum DesktopScripts {
             // sits adjacent to the Today's-picks rail. `redacted_description`
             // is the listing's own, and it is the field the own-listing
             // discriminator (`location_text` alongside it) identifies.
+            // Same JSON-escape handling as the search payload: read the string
+            // body honouring escapes, then decode it in one pass. Matching a
+            // bare-quote pattern here would both truncate at the first
+            // apostrophe-as-escape and leave \\uXXXX sequences rendering
+            // literally in the description.
             var description = null;
             var dk = flat.indexOf('"redacted_description"');
             if (dk !== -1) {
-              var dblock = flat.slice(dk, dk + 4000);
-              var dm = dblock.match(/"text":"((?:[^"]|\\\\")*)"/);
-              if (dm) description = dm[1].split('\\\\n').join(String.fromCharCode(10));
+              var dblock = flat.slice(dk, dk + 6000);
+              var tk = dblock.indexOf('"text"');
+              if (tk !== -1) {
+                var after = dblock.slice(tk + 6);
+                var dcolon = after.indexOf(':');
+                if (dcolon !== -1 && dcolon <= 3) {
+                  var body = after.slice(dcolon + 1).replace(/^[ ]+/, '');
+                  if (body.charAt(0) === '"') {
+                    var raw = '', di = 1;
+                    while (di < body.length) {
+                      var dc = body.charAt(di);
+                      if (dc === '\\\\') { raw += dc + body.charAt(di + 1); di += 2; continue; }
+                      if (dc === '"') break;
+                      raw += dc;
+                      di++;
+                    }
+                    try { description = JSON.parse('"' + raw + '"'); }
+                    catch (e) { description = raw; }
+                  }
+                }
+              }
             }
 
             // "Condition" and its value render as adjacent lines in Details.
