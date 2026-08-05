@@ -69,26 +69,31 @@ struct DetailView: View {
         }
     }
 
-    /// A **reserved** square, not a box that grows to whatever the photo turns
-    /// out to be.
+    /// Every image on this screen has a **fixed height**: the hero below, and
+    /// the 96pt squares in the photo strip. Nothing is sized by the photo that
+    /// lands in it, so the page can't reflow when one decodes.
     ///
-    /// This used to be a bare `AsyncImage` with no height: the placeholder is a
-    /// `Color`, which has no intrinsic size and collapses to nothing, and then
-    /// the decoded image expanded the frame to its full aspect height. For a
-    /// listing that was prefetched, everything below the hero is already laid
-    /// out on the first frame — so that expansion shoved the entire page down a
-    /// beat after it appeared. Cold listings hid it, because their content
-    /// arrived seconds later, once the hero had already settled.
-    ///
-    /// The photo is fitted rather than cropped, so an unusually tall or wide
-    /// one letterboxes instead of losing its edges.
+    /// That reflow was the bug. The hero was a bare `AsyncImage` with no height
+    /// — its placeholder is a `Color`, which has no intrinsic size and
+    /// collapses to nothing — so the decoded image expanded the frame to its
+    /// full aspect height and shoved the whole page down. It showed up on
+    /// prefetched listings because everything below is already laid out on the
+    /// first frame; cold ones hid it behind their own loading.
+    private static let heroHeight: CGFloat = 360
+
+    /// Filled and cropped rather than fitted, which is what a fixed height
+    /// wants: a portrait photo letterboxed into a fixed box is mostly
+    /// background. It also matches `ListingCard`, which fills at a fixed 180 —
+    /// so `matchedGeometryEffect` now animates fill to fill instead of
+    /// distorting fill into fit. The strip below shows every photo uncropped.
     private var hero: some View {
         Color(.tertiarySystemFill)
-            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .frame(height: Self.heroHeight)
             .overlay {
                 AsyncImage(url: current.thumbnailURL) { phase in
                     if let image = phase.image {
-                        image.resizable().scaledToFit()
+                        image.resizable().scaledToFill()
                     }
                 }
             }
@@ -126,31 +131,40 @@ struct DetailView: View {
         }
     }
 
-    /// One real thumbnail plus placeholders, filling in left to right.
+    private static let thumbSize: CGFloat = 96
+
+    /// One real thumbnail plus placeholders, filling in left to right. Same
+    /// shape as `hero`: a fixed box that the photo is laid into, never a box
+    /// that takes its size from the photo. The strip's own height is therefore
+    /// identical whether it holds placeholders or twelve loaded images.
     private var photoStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 if let photos = detail?.photoURLs, !photos.isEmpty {
                     ForEach(photos, id: \.self) { url in
-                        AsyncImage(url: url) { phase in
-                            if let image = phase.image {
-                                image.resizable().scaledToFill()
-                            } else {
-                                Color(.tertiarySystemFill)
+                        thumbBox {
+                            AsyncImage(url: url) { phase in
+                                if let image = phase.image {
+                                    image.resizable().scaledToFill()
+                                }
                             }
                         }
-                        .frame(width: 96, height: 96)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                 } else {
                     ForEach(0..<3, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color(.tertiarySystemFill))
-                            .frame(width: 96, height: 96)
+                        thumbBox { EmptyView() }
                     }
                 }
             }
         }
+        .frame(height: Self.thumbSize)
+    }
+
+    private func thumbBox<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        Color(.tertiarySystemFill)
+            .frame(width: Self.thumbSize, height: Self.thumbSize)
+            .overlay { content() }
+            .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     /// Reserves height so the fade-in doesn't shove the page around. Shows the
