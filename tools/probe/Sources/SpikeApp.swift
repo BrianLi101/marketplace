@@ -26,6 +26,10 @@ struct ContentView: View {
                     .disabled(!controller.looksSignedIn)
                 Button("Seller") { controller.startSellerSurvey() }
                     .disabled(!controller.looksSignedIn)
+                Button("Route") { controller.startRouteComparison() }
+                    .disabled(!controller.looksSignedIn)
+                Button("Rated") { controller.startRatedRouteTest() }
+                    .disabled(!controller.looksSignedIn)
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -155,6 +159,151 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
             webView.customUserAgent = Self.desktopUA
             await runTimingTests()
         }
+    }
+
+    func startRouteComparison() {
+        Task { await runRouteComparison() }
+    }
+
+    /// Does reaching an item page by clicking a card give the same data as
+    /// loading its URL directly?
+    ///
+    /// Desktop Marketplace is a single-page app: a click is a client-side
+    /// route change that renders a view, while a URL load is a fresh server
+    /// render. There is no reason those must produce the same DOM, and a
+    /// reported difference in seller information says they don't.
+    ///
+    /// Structure: a known-rated listing loaded directly first, as a positive
+    /// control that the detector can see a rating at all — the previous survey
+    /// searched for "246 ratings" while the page renders "(246)", so its
+    /// zero-for-six may have been the selector rather than the sellers. Then
+    /// the same listing reached both ways, so the comparison is self-controlled.
+    func runRouteComparison() async {
+        webView.customUserAgent = Self.desktopUA
+
+        await load("https://www.facebook.com/marketplace/item/1532699951339768/")
+        try? await Task.sleep(for: .seconds(9))
+        emit("ROUTE[control_direct] \(await js(Self.sellerSectionJS))")
+
+        let search = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+        await load(search)
+        try? await Task.sleep(for: .seconds(9))
+
+        // A rating can only go missing on a route if the seller has one, so a
+        // single unrated listing proves nothing either way. Walk several cards
+        // through both routes and compare per listing.
+        let idsRaw = await js(Self.cardIDListJS)
+        let ids = Self.decodeIDs(idsRaw).prefix(6)
+        emit("ROUTE[candidates] \(ids.joined(separator: ","))")
+
+        for (index, id) in ids.enumerated() {
+            // Route A — back to the search, then click that card in place.
+            await load(search)
+            try? await Task.sleep(for: .seconds(8))
+            _ = await js(Self.clickCardAt(index: index))
+            try? await Task.sleep(for: .seconds(9))
+            emit("ROUTE[A:\(id)] \(await js(Self.sellerSectionJS))")
+
+            // Route B — the same listing by direct URL load.
+            await load("https://www.facebook.com/marketplace/item/\(id)/")
+            try? await Task.sleep(for: .seconds(9))
+            emit("ROUTE[B:\(id)] \(await js(Self.sellerSectionJS))")
+        }
+
+        emit("=== ROUTEPROBE COMPLETE ===")
+    }
+
+    static func decodeIDs(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return ids
+    }
+
+    func startRatedRouteTest() {
+        Task { await runRatedRouteTest() }
+    }
+
+    /// The route comparison found the two views differ, but every seller it
+    /// sampled was unrated — so it could not tell whether the click route
+    /// *drops* a rating or those sellers simply had none.
+    ///
+    /// Fixes that by finding a positive first: direct-load candidates until one
+    /// with a rating turns up, then reach that same listing by clicking. Plant
+    /// listings are the hunting ground because the known-rated seller in hand
+    /// (246 ratings) sells anthuriums.
+    func runRatedRouteTest() async {
+        webView.customUserAgent = Self.desktopUA
+        let search = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=anthurium"
+
+        await load(search)
+        try? await Task.sleep(for: .seconds(9))
+        let ids = Self.decodeIDs(await js(Self.cardIDListJS))
+        emit("RATED[candidates] \(ids.count) cards")
+
+        var ratedIndex: Int?
+        var ratedID: String?
+        for (index, id) in ids.prefix(10).enumerated() {
+            await load("https://www.facebook.com/marketplace/item/\(id)/")
+            try? await Task.sleep(for: .seconds(7))
+            let report = await js(Self.sellerSectionJS)
+            let isRated = report.contains("\"highlyRated\":true") || !report.contains("\"starLabels\":[]")
+            emit("RATED[scan\(index):\(id)] rated=\(isRated) \(report.prefix(190))")
+            if isRated, ratedIndex == nil {
+                ratedIndex = index
+                ratedID = id
+            }
+        }
+
+        guard let ratedIndex, let ratedID else {
+            emit("RATED[none] no rated seller among the candidates — route effect on ratings still unproven")
+            return
+        }
+
+        // Same listing, reached by clicking its card in the search results.
+        await load(search)
+        try? await Task.sleep(for: .seconds(9))
+        _ = await js(Self.clickCardAt(index: ratedIndex))
+        try? await Task.sleep(for: .seconds(9))
+        emit("RATED[clicked:\(ratedID)] \(await js(Self.sellerSectionJS))")
+
+        await load("https://www.facebook.com/marketplace/item/\(ratedID)/")
+        try? await Task.sleep(for: .seconds(8))
+        emit("RATED[direct:\(ratedID)] \(await js(Self.sellerSectionJS))")
+
+        // Seller data survives both routes, but the modal carries roughly 40%
+        // of the body text. Name what is actually missing, because a field
+        // that silently disappears on one route is how an extractor starts
+        // returning nulls for no visible reason.
+        await load(search)
+        try? await Task.sleep(for: .seconds(9))
+        _ = await js(Self.clickCardAt(index: ratedIndex))
+        try? await Task.sleep(for: .seconds(9))
+        let clickedText = await js(Self.bodyTextJS)
+
+        await load("https://www.facebook.com/marketplace/item/\(ratedID)/")
+        try? await Task.sleep(for: .seconds(8))
+        let directText = await js(Self.bodyTextJS)
+
+        let clickedLines = Set(Self.lines(clickedText))
+        let directLines = Self.lines(directText)
+        let onlyDirect = directLines.filter { !clickedLines.contains($0) }
+        emit("RATED[onlyOnDirect \(onlyDirect.count) lines] \(onlyDirect.prefix(14).joined(separator: " · ").prefix(600))")
+
+        let directSet = Set(directLines)
+        let onlyClicked = Array(clickedLines).filter { !directSet.contains($0) }
+        emit("RATED[onlyOnClicked \(onlyClicked.count) lines] \(onlyClicked.prefix(10).joined(separator: " · ").prefix(400))")
+
+        emit("=== RATEDROUTE COMPLETE ===")
+    }
+
+    static func lines(_ json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let text = obj["text"] as? String else { return [] }
+        return text
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.count > 2 }
     }
 
     func startSellerSurvey() {
@@ -2118,6 +2267,128 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         })()
         """
     }
+
+    /// Dumps the Seller information block verbatim instead of pattern-matching
+    /// for a phrasing. The last survey looked for "N ratings" while the page
+    /// renders "(N)" beside star glyphs, so it reported no ratings anywhere —
+    /// reading the section and looking at it is the fix.
+    static let sellerSectionJS = """
+    (function(){
+      try {
+        var body = document.body.innerText || '';
+        var section = null;
+        var all = document.querySelectorAll('div, section, span, h2, h3');
+        for (var i = 0; i < all.length; i++) {
+          var t = (all[i].innerText || '').trim();
+          if (t.indexOf('Seller information') === 0 && t.length > 20 && t.length < 400) {
+            section = t;
+            break;
+          }
+        }
+        var starLabels = [];
+        var labelled = document.querySelectorAll('[aria-label]');
+        for (var j = 0; j < labelled.length && starLabels.length < 5; j++) {
+          var l = labelled[j].getAttribute('aria-label') || '';
+          if (/star|rating|rated/i.test(l)) starLabels.push(l.slice(0, 50));
+        }
+        return JSON.stringify({
+          href: location.href.slice(0, 90),
+          sellerSection: section ? section.replace(/[\\r\\n]+/g, ' | ').slice(0, 180) : null,
+          hasSellerHeading: body.indexOf('Seller information') !== -1,
+          sellerDetailsLink: body.indexOf('Seller details') !== -1,
+          highlyRated: body.indexOf('Highly rated') !== -1,
+          parenCount: (body.match(/\\((\\d+)\\)/) || [])[1] || null,
+          joined: (body.match(/Joined Facebook in \\d{4}/) || [])[0] || null,
+          starLabels: starLabels,
+          profileLinks: document.querySelectorAll('a[href*="/marketplace/profile/"]').length,
+          listed: (body.match(/Listed [^|]{0,34}/) || [])[0] || null,
+          // The full page renders the Marketplace sidebar; the click route
+          // appears to open a lightbox instead. Recording the layout as well
+          // as the fields, since layout is the likely cause of any difference.
+          hasSidebar: body.indexOf('Browse all') !== -1 || body.indexOf('Create new listing') !== -1,
+          hasCloseButton: document.querySelectorAll('[aria-label="Close"]').length,
+          bodyLen: body.length
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    static let firstCardIDJS = """
+    (function(){
+      var a = document.querySelector('a[href*="/marketplace/item/"]');
+      if (!a) return 'none';
+      var h = a.getAttribute('href') || '';
+      var k = h.indexOf('/marketplace/item/');
+      var j = k + 18, id = '';
+      while (j < h.length) {
+        var c = h.charAt(j);
+        if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+      }
+      return id;
+    })()
+    """
+
+    static let bodyTextJS = """
+    (function(){
+      return JSON.stringify({ text: (document.body.innerText || '').slice(0, 6000) });
+    })()
+    """
+
+    static let cardIDListJS = """
+    (function(){
+      var out = [], seen = {};
+      var links = document.querySelectorAll('a[href*="/marketplace/item/"]');
+      for (var i = 0; i < links.length; i++) {
+        var h = links[i].getAttribute('href') || '';
+        var k = h.indexOf('/marketplace/item/');
+        if (k === -1) continue;
+        var j = k + 18, id = '';
+        while (j < h.length) {
+          var c = h.charAt(j);
+          if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+        }
+        if (id.length > 8 && !seen[id]) { seen[id] = 1; out.push(id); }
+      }
+      return JSON.stringify(out);
+    })()
+    """
+
+    static func clickCardAt(index: Int) -> String {
+        """
+        (function(){
+          try {
+            var links = document.querySelectorAll('a[href*="/marketplace/item/"]');
+            var a = links[\(index)];
+            if (!a) return 'no card at \(index)';
+            a.scrollIntoView({ block: 'center' });
+            var r = a.getBoundingClientRect();
+            var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+            ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){
+              a.dispatchEvent(new MouseEvent(k, { bubbles: true, cancelable: true,
+                                                  composed: true, clientX: cx, clientY: cy }));
+            });
+            return 'clicked';
+          } catch (e) { return 'ERR ' + String(e.message); }
+        })()
+        """
+    }
+
+    static let clickFirstCardJS = """
+    (function(){
+      try {
+        var a = document.querySelector('a[href*="/marketplace/item/"]');
+        if (!a) return 'no card';
+        a.scrollIntoView({ block: 'center' });
+        var r = a.getBoundingClientRect();
+        var cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(function(k){
+          a.dispatchEvent(new MouseEvent(k, { bubbles: true, cancelable: true,
+                                              composed: true, clientX: cx, clientY: cy }));
+        });
+        return 'clicked ' + (a.getAttribute('aria-label') || '').slice(0, 40);
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
 
     static let cardCountJS = """
     (function(){

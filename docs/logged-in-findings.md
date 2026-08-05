@@ -30,7 +30,12 @@ all. That is the missing ingredient for the "filter out businesses and
 drop-shippers" goal — listings can be grouped by seller instead of guessed at
 from duplicate coordinates and repeated titles.
 
-### Ratings are not confirmed anywhere — do not build on them
+### Ratings — superseded by §1a
+
+> The survey below concluded ratings were unavailable everywhere. **That was
+> wrong on both counts** — a broken detector plus a sample of unrated desk
+> sellers. Ratings are readable and common; see §1a. The `profileLinks` and
+> `joined` columns still stand.
 
 Six listings, both user agents, all signed in:
 
@@ -62,6 +67,70 @@ one, which gets name and join date without any account at all.
 
 Photo counts are `img[src*="scontent"]` currently in the DOM, so they undercount
 lazy-loaded galleries; treat that row as indicative only.
+
+## 1a. Click vs. direct URL: the view changes, the data does not
+
+Desktop Marketplace is a single-page app, and the two ways of reaching an item
+page produce visibly different screens. Measured on six listings, then on a
+rated seller specifically.
+
+| | click a card | load the URL |
+|---|---|---|
+| layout | **modal / lightbox** (2 close buttons) | full page (0) |
+| body text | 406–910 chars | **~2× more** (808–1990) |
+| listing's own fields | complete | complete |
+| seller name + joined | present | present |
+| **seller rating + stars** | **present** | present |
+| "Today's picks" rail | **absent** | present |
+
+**Ratings are not route-dependent.** On the same rated listing reached both
+ways, the seller block is byte-identical:
+
+```
+Seller information | Seller details | Kelsey Jones | (44) |
+Highly rated on Marketplace | Joined Facebook in 2010
+starLabels: ["4.8 out of 5 stars…"]
+```
+
+Diffing the full body text of both routes settles what the modal actually drops:
+**68 lines present only on the direct load, 0 present only on the click** — and
+all 68 are the "Today's picks" recommendation rail (`Bamboo bathroom rack`,
+`Standing Desk`, `Free West Elm rug`…). The modal is a strict subset of the full
+page, and the only omission is *other sellers' listings*.
+
+### Why it looked like ratings depended on the route
+
+The two pages compared were different listings: a plant seller with 246 ratings
+reached by one route, and a desk seller reached by the other. The route differed
+*and* the seller differed, and the rating tracked the seller. Ratings turn out to
+be strongly category-dependent — see below.
+
+### This makes the click route arguably *better* for extraction
+
+"Today's picks" is the single largest source of wrong answers in this project:
+neighbouring listings' coordinates, condition, and `creation_time` all live in
+that rail, and every extractor has needed a discriminator to avoid attributing
+them to the listing being viewed (`embedded-payload.md` §3,
+`mobile-location-radius-notes.md` §6). A modal that omits the rail entirely has
+none of that contamination to guard against.
+
+### Correction: ratings are common, and the earlier survey was wrong twice
+
+The previous survey reported no ratings on any of six sellers, on either
+surface. Both halves of that were wrong:
+
+1. **The detector was broken.** It searched for `N ratings`; the page renders
+   `(N)` beside star glyphs, with `Highly rated on Marketplace` alongside.
+2. **The sample was unrepresentative.** All six were desk listings from casual
+   sellers. Ten consecutive *anthurium* listings were rated 10 out of 10 —
+   `(9)`, `(11)`, `(30)`, `(44)`, `(53)`, `(67)`, `(70)`, `(92)`, `(195)`,
+   `(246)`.
+
+So seller ratings are readable, and their availability tracks the category:
+plant sellers are semi-professional and rated, one-off furniture sellers mostly
+are not. Ratings and review counts are therefore viable for the
+business/drop-shipper filter — with the caveat that "has ratings" partly *is* the
+signal for a commercial seller.
 
 ## 2. Payload past the first page: still capped (the plan's worst result)
 
