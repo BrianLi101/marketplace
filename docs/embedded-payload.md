@@ -190,7 +190,66 @@ effect.
 observed behaviour, not from anything Meta documents. The measurements above are
 real; the causal story is the most economical explanation of them.
 
-## 5b. Unresolved: what transport pagination uses
+## 5b. Resolved: it's a WebSocket
+
+**Answered 2026-08-05.** Reported by a parallel Codex session and independently
+reproduced here. WebLite loads feed data over a WebSocket, which is why both
+instruments below came back empty — WebSocket frames are not `fetch`, not
+`XMLHttpRequest`, and appear in **no** Resource Timing entry. The two negatives
+were correct and jointly misleading.
+
+Wrapping `window.WebSocket` at `.atDocumentStart`, a mobile search for `desk`:
+
+```
+socket    wss://kaios-d.facebook.com:443/ws/0000099999?lid=…
+frames    37, of which 1 carries listing routes
+that frame   binary, 124,534 bytes, exactly 26 marketplace/item/<id> routes
+rendered     26 cards
+```
+
+Twenty-six ids for twenty-six cards, arriving before the cards reach the DOM.
+`kaios-d` is Facebook's Lite/KaiOS infrastructure, which is consistent with
+WebLite being the same server-driven stack.
+
+Pagination uses the same channel: scrolling to 50 cards added three more
+id-carrying frames (79,128 B / 50 ids, 75,012 B / 17, 62,575 B / 15).
+
+### Ordering holds — verified by tapping
+
+Ids in a frame are worthless unless they can be aligned to cards; a
+mis-alignment opens a stranger's listing, which is the failure this project
+cares most about. So the order was checked against reality rather than assumed:
+
+| tapped card index | landed on | position in socket list |
+|---|---|---|
+| 1 | `1624050395351390` ("Wooden writing desk with gray hutch") | **1** |
+| 2 | `1797842328020434` | **2** |
+
+Socket order matches DOM order for both.
+
+### The hazard: the list is cumulative across navigations
+
+Not in the original report, and it is the thing that would cause a mis-mapping
+in practice. The accumulated id list **grew while tapping**: 26 after the search,
+42 after opening one item, 55 after opening a second. Item pages push their own
+frames — their "Today's picks" rails carry item routes too — so a naive global
+`ids[cardIndex]` lookup silently drifts by however many ids an item page
+contributed.
+
+Anything built on this has to scope ids to the frame that delivered the feed,
+and reset on navigation. The 79 unique ids observed against 50 rendered cards at
+the end of the run is that contamination, not evidence that ids arrive ahead of
+rendering.
+
+### What it would buy
+
+Every card's `itemURL` immediately, removing the ~1.9 s per-listing tap that
+`FeedEngine.openItem` currently pays and the prefetch budget built around it.
+That is a large win, but it is a private binary protocol with session-scoped
+ids, so it belongs behind DOM extraction as an accelerator with fixtures and a
+health check — not as the correctness path.
+
+## 5c. Superseded: what transport pagination uses
 
 Worth recording as a genuine dead end rather than quietly dropping.
 
@@ -212,9 +271,15 @@ from 181 KB to 297 KB. Three things were established about that new content:
 
 Something is either clearing the Resource Timing buffer (WebLite demonstrably
 harvests it — `weblite_resources_timing_logging` is one of the four beacons) or
-using a transport neither instrument observes. Not chased further because it
-does not change any decision: whatever the transport, the bytes arriving on
-mobile contain none of the structured data.
+using a transport neither instrument observes.
+
+> **It was the second one — a WebSocket (§5b).** Recorded here as a worked
+> example for `probe-checklist.md`: two instruments returning nothing is not
+> two pieces of evidence, it is one blind spot counted twice. Both `fetch`/XHR
+> hooking and Resource Timing miss WebSockets, so their agreement carried far
+> less information than it appeared to. The conclusion drawn at the time — that
+> mobile carries no structured data regardless of transport — did survive, but
+> for a reason unrelated to the strength of the evidence.
 
 ## 6. What this changes
 

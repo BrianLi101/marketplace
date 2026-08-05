@@ -67,6 +67,14 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: false)
         )
+        // WebSocket frames appear in no Resource Timing entry and go through
+        // neither fetch nor XHR, which is exactly why §5b came back empty on
+        // both instruments. Wrap the constructor before any page script runs.
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.socketRecorderJS,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         webView.navigationDelegate = self
@@ -107,7 +115,51 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     /// `price_ascend` must come back monotonic, `shipping` must lose its city
     /// lines, `radius` must shrink the city set.
     func runTests() async {
-        await runSeamTests()
+        await runSocketTests()
+    }
+
+    /// Does WebLite really ship canonical item URLs over a WebSocket before the
+    /// cards reach the DOM?
+    ///
+    /// If so it settles §5b — WebSocket frames appear in no Resource Timing
+    /// entry and go through neither `fetch` nor XHR, which is exactly why both
+    /// earlier instruments came back empty — and it means the per-card tap that
+    /// currently costs ~1.9s per listing is avoidable.
+    ///
+    /// Presence of ids in a frame is the cheap half. The half that decides
+    /// whether this is usable is **ordering**: an id list that cannot be
+    /// aligned to cards is a list of ids for unknown listings, which is worse
+    /// than useless because a mis-mapping opens someone else's listing.
+    func runSocketTests() async {
+        webView.customUserAgent = Self.mobileUA
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(12))
+
+        emit("SOCKET[search] \(await js(Self.socketReportJS))")
+        let idList = await js(Self.socketIDListJS)
+        emit("SOCKET[ids] \(idList.prefix(400))")
+
+        // Alignment check: tap a card, see which recorded id it actually was.
+        for index in [1, 2] {
+            emit("SOCKET[tap\(index)] \(await js(Self.tapCard(index: index)))")
+            try? await Task.sleep(for: .seconds(5))
+            emit("SOCKET[landed\(index)] \(await js(Self.landedIDJS))")
+            _ = await js("(function(){ history.back(); return 'back'; })()")
+            try? await Task.sleep(for: .seconds(6))
+        }
+
+        // Does pagination bring more ids down the same channel?
+        let scrollView = webView.scrollView
+        for _ in 0..<6 {
+            let maxY = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            let next = min(scrollView.contentOffset.y + scrollView.bounds.height * 0.9, maxY)
+            scrollView.setContentOffset(CGPoint(x: 0, y: next), animated: false)
+            try? await Task.sleep(for: .milliseconds(900))
+        }
+        try? await Task.sleep(for: .seconds(3))
+        emit("SOCKET[paginated] \(await js(Self.socketReportJS))")
+
+        emit("=== SOCKETPROBE COMPLETE ===")
     }
 
     /// Does a photo id actually bridge the two surfaces?
@@ -1251,6 +1303,144 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
           });
         }
         return JSON.stringify({ pairs: out });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    /// Records every WebSocket frame, decoding binary ones as UTF-8, and pulls
+    /// any `marketplace/item/<id>` route out of them.
+    ///
+    /// No regex anywhere: this string crosses Swift and JavaScript escaping,
+    /// and a stray backslash there has twice produced an opaque
+    /// "A JavaScript exception occurred" (see the probe README).
+    static let socketRecorderJS = """
+    (function(){
+      try {
+        if (window.__ws) return;
+        window.__ws = { opened: [], frames: [], ids: [], seen: {}, samples: [] };
+        var Orig = window.WebSocket;
+        if (!Orig) return;
+
+        function pullIds(text) {
+          var needle = 'marketplace/item/';
+          var from = 0, found = [];
+          while (true) {
+            var i = text.indexOf(needle, from);
+            if (i === -1) break;
+            var j = i + needle.length, id = '';
+            while (j < text.length) {
+              var c = text.charAt(j);
+              if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+            }
+            if (id.length > 6) found.push(id);
+            from = i + needle.length;
+          }
+          return found;
+        }
+
+        function absorb(text, kind) {
+          var ids = pullIds(text);
+          window.__ws.frames.push({ kind: kind, len: text.length, ids: ids.length });
+          for (var i = 0; i < ids.length; i++) {
+            if (!window.__ws.seen[ids[i]]) {
+              window.__ws.seen[ids[i]] = 1;
+              window.__ws.ids.push(ids[i]);
+            }
+          }
+          if (window.__ws.samples.length < 2 && ids.length > 0) {
+            window.__ws.samples.push(text.slice(0, 200));
+          }
+        }
+
+        function handle(data) {
+          try {
+            if (typeof data === 'string') { absorb(data, 'text'); return; }
+            if (data instanceof ArrayBuffer) {
+              absorb(new TextDecoder('utf-8', { fatal: false }).decode(data), 'binary');
+              return;
+            }
+            if (data && typeof data.arrayBuffer === 'function') {
+              data.arrayBuffer().then(function(buf){
+                absorb(new TextDecoder('utf-8', { fatal: false }).decode(buf), 'blob');
+              });
+              return;
+            }
+            window.__ws.frames.push({ kind: 'unknown', len: 0, ids: 0 });
+          } catch (e) {}
+        }
+
+        function Wrapped(url, protocols) {
+          var sock = (protocols === undefined) ? new Orig(url) : new Orig(url, protocols);
+          window.__ws.opened.push(String(url).slice(0, 140));
+          try { sock.binaryType = 'arraybuffer'; } catch (e) {}
+          sock.addEventListener('message', function(ev){ handle(ev.data); });
+          return sock;
+        }
+        Wrapped.prototype = Orig.prototype;
+        Wrapped.OPEN = Orig.OPEN; Wrapped.CLOSED = Orig.CLOSED;
+        Wrapped.CONNECTING = Orig.CONNECTING; Wrapped.CLOSING = Orig.CLOSING;
+        window.WebSocket = Wrapped;
+      } catch (e) {}
+    })()
+    """
+
+    static let socketReportJS = """
+    (function(){
+      try {
+        var w = window.__ws || { opened: [], frames: [], ids: [], samples: [] };
+        var photos = 0;
+        var imgs = document.querySelectorAll('img');
+        for (var i = 0; i < imgs.length; i++) {
+          var s = imgs[i].getAttribute('src') || '';
+          if (s.indexOf('scontent') !== -1 && s.indexOf('rsrc.php') === -1) photos++;
+        }
+        var withIds = [];
+        for (var j = 0; j < w.frames.length; j++) {
+          if (w.frames[j].ids > 0) withIds.push(w.frames[j]);
+        }
+        return JSON.stringify({
+          sockets: w.opened.length,
+          socketURLs: w.opened.slice(0, 3),
+          frames: w.frames.length,
+          framesCarryingIds: withIds.length,
+          biggestIdFrames: withIds.sort(function(a,b){ return b.len - a.len; }).slice(0, 4),
+          uniqueItemIds: w.ids.length,
+          renderedCards: photos,
+          firstIds: w.ids.slice(0, 3)
+        });
+      } catch (e) { return 'ERR ' + String(e.message); }
+    })()
+    """
+
+    static let socketIDListJS = """
+    (function(){
+      var w = window.__ws || { ids: [] };
+      return JSON.stringify({ n: w.ids.length, ids: w.ids.slice(0, 12) });
+    })()
+    """
+
+    /// After a tap: which listing did we land on, and where does its id sit in
+    /// the order the socket delivered them?
+    static let landedIDJS = """
+    (function(){
+      try {
+        var href = location.href;
+        var needle = 'marketplace/item/';
+        var i = href.indexOf(needle), id = '';
+        if (i !== -1) {
+          var j = i + needle.length;
+          while (j < href.length) {
+            var c = href.charAt(j);
+            if (c >= '0' && c <= '9') { id += c; j++; } else { break; }
+          }
+        }
+        var w = window.__ws || { ids: [] };
+        var pos = -1;
+        for (var k = 0; k < w.ids.length; k++) {
+          if (w.ids[k] === id) { pos = k; break; }
+        }
+        return JSON.stringify({ landedOn: id || null, indexInSocketList: pos,
+                                socketListSize: w.ids.length });
       } catch (e) { return 'ERR ' + String(e.message); }
     })()
     """

@@ -115,3 +115,20 @@ Mistakes these rules would have caught, all real:
   did — the app watched `decidePolicyFor`, and WebLite routes client-side
   through `history.replaceState`, so no navigation ever arrives. The probe that
   "proved" it worked in the spike was tapping the Facebook wordmark.
+- Concluding mobile pagination's transport was unfindable, from two instruments
+  that share a blind spot. A `fetch`/XHR hook injected at document start caught
+  nothing and Resource Timing showed no content request, which looked like two
+  independent negatives. Neither observes **WebSockets**, which is what WebLite
+  actually uses (`embedded-payload.md` §5b). See the rule below.
+
+## 7. Agreeing instruments are not independent evidence
+
+Two probes returning nothing is one piece of evidence if they can both miss the
+same thing. Before treating a negative as settled, name what would be invisible
+to *every* instrument used — and reach for one that fails differently.
+
+For a "where did this content come from" question the coverage ladder is
+roughly: `fetch`/XHR hooks → Resource Timing → WebSocket/EventSource wrapping →
+Service Worker interception → a proxy or `WKURLSchemeHandler` below the page
+entirely. The first two miss sockets; the first three miss anything a Service
+Worker serves from cache. Only the last sees everything.

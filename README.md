@@ -234,6 +234,27 @@ item — several of these are harder or easier than they look.
 - [ ] Decide drop vs. badge. "Local marketplace browser" and "ships from three
       states away" are different products.
 
+**Mobile's WebSocket**
+
+- [ ] **Read item ids off the feed WebSocket instead of tapping for them.**
+      WebLite streams the feed over `wss://kaios-d.facebook.com`, and a single
+      124 KB binary frame carries a canonical `/marketplace/item/<id>` route for
+      every card — 26 ids for 26 cards, in DOM order, verified by tapping cards
+      1 and 2 and landing at socket positions 1 and 2. That removes the ~1.9 s
+      per-listing resolve tap and the prefetch budget built around it.
+      `docs/embedded-payload.md` §5b.
+- [ ] Scope ids per frame and reset on navigation. The accumulated list is
+      contaminated by item pages, which push their own "Today's picks" routes —
+      measured growth 26 → 42 → 55 across two taps. A global `ids[cardIndex]`
+      lookup drifts, and drifting means opening a stranger's listing.
+- [ ] Keep DOM extraction as the correctness path. This is a private binary
+      protocol with session-scoped ids; it wants fixtures, a health metric and
+      a silent fallback before anything depends on it.
+- [ ] **Raise the photo cap.** `WebLiteScripts.swift:406` hard-caps at
+      `photos.slice(0, 12)`; sampled item pages carry 18–23. Independent of the
+      socket work and roughly a one-line change plus a look at what the detail
+      view does with more.
+
 **Agent shopping**
 
 - [ ] **Describe what you want, get a set of options.** Tell it "a desk under
