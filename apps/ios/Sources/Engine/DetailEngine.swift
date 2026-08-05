@@ -6,7 +6,15 @@ extension Logger {
     static let detail = Logger(subsystem: "com.brianli101.marketplace", category: "detail")
 }
 
-/// Webview B — loads item pages so the feed never has to navigate away.
+/// Webview B — the fallback path to an item page, plus the session cache.
+///
+/// This used to be how every listing was opened. It no longer is: tapping a
+/// card lands `FeedEngine` on the item page with the full document already in
+/// its DOM, so loading the same page a second time here cost ~4.4s of a ~6.5s
+/// tap for nothing. What remains is the route for cards the tap can't reach —
+/// resolve the id by searching the desktop surface, then load the page — and
+/// the cache both paths write into.
+///
 /// Detail pages are ordinary documents: description, condition, posted date,
 /// photos and location all render logged out (seller identity does not).
 @MainActor
@@ -153,6 +161,11 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
 
     func cachedDetail(for id: String) -> ListingDetail? { cache[id] }
 
+    /// §3.2 — the session cache is keyed by listing, not by who fetched it, so
+    /// a detail harvested from the feed webview during a tap makes a later
+    /// revisit just as instant as one this engine loaded itself.
+    func cache(_ detail: ListingDetail, for id: String) { cache[id] = detail }
+
     /// §3.2 — the preview is the screen; this only ever enhances it. Failure is
     /// quiet and the caller keeps showing what it already had.
     func loadDetail(id: String, url: URL) async -> ListingDetail? {
@@ -164,7 +177,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         // Marketplace's own landing page all render fine and would otherwise be
         // extracted as if they were the listing — that is how "Buy and sell in
         // your community on Marketplace" ended up as a description.
-        let expectedID = url.pathComponents.first { $0.count > 8 && $0.allSatisfy(\.isNumber) }
+        let expectedID = url.marketplaceItemID
 
         webView.customUserAgent = Self.mobileUserAgent
         await beginLoad(url)
@@ -182,8 +195,8 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
             return nil
         }
         Logger.detail.info("detail ok: desc=\(raw.description != nil) photos=\(raw.photoURLs.count) cond=\(raw.conditionText != nil) coord=\(raw.latitude ?? "none", privacy: .public),\(raw.longitude ?? "none", privacy: .public)")
-        if let expectedID, raw.itemId != expectedID {
-            Logger.detail.warning("wrong page: wanted \(expectedID, privacy: .public), got \(raw.itemId ?? "none", privacy: .public)")
+        if !raw.matches(expectedID) {
+            Logger.detail.warning("wrong page: wanted \(expectedID ?? "none", privacy: .public), got \(raw.itemId ?? "none", privacy: .public)")
             metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: false)
             return nil
         }
@@ -195,19 +208,7 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         }
         await pacer.recordSuccess()
 
-        let detail = ListingDetail(
-            description: raw.description,
-            photoURLs: raw.photoURLs.compactMap(URL.init(string:)),
-            postedText: raw.postedText,
-            conditionText: raw.conditionText,
-            locationText: raw.locationText,
-            sellerName: raw.sellerName,
-            sellerJoined: raw.sellerJoined,
-            sellerRating: raw.sellerRatingText.flatMap(Double.init),
-            sellerRatingCount: raw.sellerRatingCount.flatMap(Int.init),
-            latitude: raw.latitude.flatMap(Double.init),
-            longitude: raw.longitude.flatMap(Double.init)
-        )
+        let detail = raw.listingDetail
         cache[id] = detail
         metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: true)
         return detail
@@ -224,22 +225,6 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
         guard let text, let open = text.firstIndex(of: "("),
               let close = text.firstIndex(of: ")"), open < close else { return nil }
         return Int(text[text.index(after: open)..<close].trimmingCharacters(in: .whitespaces))
-    }
-
-    private struct RawDetail: Decodable {
-        let itemId: String?
-        let sellerName: String?
-        let sellerJoined: String?
-        let sellerRatingText: String?
-        let sellerRatingCount: String?
-        let description: String?
-        let photoURLs: [String]
-        let postedText: String?
-        let conditionText: String?
-        let locationText: String?
-        let latitude: String?
-        let longitude: String?
-        let loginWall: Bool
     }
 
     nonisolated func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {

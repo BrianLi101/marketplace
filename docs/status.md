@@ -20,8 +20,21 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
 - **Detail enrichment** — full multi-paragraph description with its paragraph
   breaks, photo strip, posted date, **the listing's own approximate
   coordinate**, and **seller name, star rating and rating count** (mobile-only).
-  Item pages load with the *mobile* UA; the id comes from tapping the card, not
-  a desktop search. Measured 2.25–3.5s end to end, down from 4.7–7.6s.
+  **Harvested from the feed webview during the tap**, not fetched again:
+  measured **1.9–2.2s** tap-to-complete, down from ~6.5s. A revisit inside the
+  session is instant and costs no network at all.
+  - The tap is now the whole mechanism. WebLite routes it client-side, and by
+    the time `location.href` shows the item URL the entire page — description,
+    twelve photos, seller, coordinate — is already in that DOM. Measured at
+    **3ms**. The engine used to wind history back at exactly that moment and
+    have `DetailEngine` load the identical page again: 830ms of settling plus a
+    3.5s cold load, ~4.4s of the old 6.5s, spent re-fetching a page it was
+    standing on.
+  - Restoring the feed (`history.back()` + settle) now happens *after* the
+    caller has its data, in a task the next reader of the results page awaits.
+    The user never waits for it.
+  - Content is delivered in two stages — text as soon as it exists, photos when
+    the gallery resolves — so a slow gallery can't hold back the description.
   - Polls for content rather than sleeping a fixed 1.5s, and doesn't wait for
     `didFinish` — on an item page that waits for every photo to download.
   - Rejects any page whose `location.pathname` id isn't the one requested.

@@ -51,7 +51,15 @@ struct DetailView: View {
         }
         .task {
             distances.resolve(place: listing.locationText)
-            let enriched = await store.enrich(listing)
+            // Words land seconds before the gallery, so they're shown the
+            // moment they exist rather than waiting on the photos. The strip
+            // keeps its own placeholders until the second stage arrives.
+            let enriched = await store.enrich(listing) { staged in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    current = staged
+                    isEnriching = false
+                }
+            }
             distances.resolve(place: enriched.locationText ?? enriched.detail?.locationText)
             withAnimation(.easeOut(duration: 0.25)) {
                 current = enriched

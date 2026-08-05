@@ -6,19 +6,22 @@ extension Logger {
     static let feed = Logger(subsystem: "com.brianli101.marketplace", category: "feed")
 }
 
-/// Webview A — owns the results page and its pagination state, and never
-/// navigates away from it.
+/// Webview A — owns the results page, its pagination state, and the item pages
+/// reached by tapping a card.
 ///
-/// Two behaviours here were established empirically (docs/feasibility-2026-07-31.md)
-/// and are load-bearing:
+/// Three behaviours here were established empirically
+/// (docs/feasibility-2026-07-31.md) and are load-bearing:
 ///
 ///  1. **Pagination only responds to the native scroll view.** `window.scrollTo`
 ///     and synthesized `TouchEvent`s both leave the page frozen; stepping
 ///     `scrollView.contentOffset` loads the next batch.
-///  2. **Tapping a card is the only way to learn its item id.** The click
-///     triggers a navigation to `/marketplace/item/{id}`, which this engine
-///     captures and then *cancels* — so the feed keeps its scroll position and
-///     the load costs nothing.
+///  2. **Tapping a card is the only way to learn its item id.** WebLite routes
+///     the tap client-side through `history.replaceState`, so no navigation
+///     reaches `decidePolicyFor` and the id has to be polled off `location.href`.
+///  3. **That same tap delivers the whole item page**, in this webview, ~3ms
+///     after the URL changes. So this engine deliberately *does* leave the
+///     results page — briefly — and reads the listing where it lands, rather
+///     than handing a URL to `DetailEngine` to fetch all over again.
 @MainActor
 final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     enum LoadState: Equatable {
@@ -34,6 +37,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
 
     private var navigationContinuation: CheckedContinuation<Void, Never>?
     private var isResolvingItemURL = false
+    private var restoreTask: Task<Void, Never>?
     private var lastDocHeight: Double = 0
     private var pageIndex = 0
 
@@ -133,6 +137,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// Reads every card currently in the DOM. Cheap and side-effect free — no
     /// network, so it can be called after each pagination step.
     func extractCards() async -> [RawCard] {
+        await awaitFeedRestored()
         guard let json = await evaluate(WebLiteScripts.extract),
               let data = json.data(using: .utf8),
               let result = try? JSONDecoder().decode(ExtractResult.self, from: data) else {
@@ -178,6 +183,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// exhausted (or the page stopped responding), so callers stop asking.
     @discardableResult
     func loadNextBatch() async -> Bool {
+        await awaitFeedRestored()
         guard canLoadMore, state == .ready else { return false }
         guard await pacer.waitForSlot() else { return false }
 
@@ -213,41 +219,99 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
 
     // MARK: - Resolving a listing's canonical URL
 
-    /// Clicks the card and catches the navigation it triggers, without letting
-    /// it happen. Costs no network and leaves the feed exactly where it was.
-    /// Taps a card and reads the listing id out of the resulting URL.
+    struct ItemHarvest {
+        let url: URL
+        let detail: RawDetail
+    }
+
+    /// Taps a card and reads the item page **in place**.
     ///
-    /// WebLite routes the tap **client-side** through `history.replaceState`,
-    /// so no navigation ever reaches `decidePolicyFor`. Waiting on the
-    /// navigation delegate — which is what this used to do — timed out after
-    /// ten seconds every time while the tap was working perfectly. Poll
-    /// `location.href` instead, then wind the history back so the feed is
-    /// exactly where the user left it: verified to restore all 26 cards.
-    func resolveItemURL(cardIndex: Int) async -> URL? {
+    /// WebLite routes the tap client-side through `history.replaceState`, so no
+    /// navigation ever reaches `decidePolicyFor` — polling `location.href` is
+    /// how the id arrives. The part that was being wasted: by the time that URL
+    /// appears, the entire item page is already in this webview's DOM. Measured
+    /// at **3ms** — description, all twelve photos, seller and coordinate.
+    ///
+    /// This used to wind history back at that exact moment and hand the bare
+    /// URL to `DetailEngine`, which loaded the identical page a second time.
+    /// That round trip was ~4.4s of the ~6.5s a tap cost: 830ms of settling
+    /// plus a 3.5s cold load of a page we were standing on.
+    ///
+    /// `onPartial` fires as soon as there is text to show, seconds before the
+    /// gallery resolves. The return value is the most complete read.
+    func openItem(cardIndex: Int, onPartial: @MainActor (ItemHarvest) -> Void) async -> ItemHarvest? {
+        await awaitFeedRestored()
         isResolvingItemURL = true
         defer { isResolvingItemURL = false }
 
+        let clock = ContinuousClock()
         _ = await evaluate(WebLiteScripts.click(index: cardIndex))
 
-        let clock = ContinuousClock()
-        let deadline = clock.now + .seconds(6)
+        let urlDeadline = clock.now + .seconds(6)
         var found: URL?
-        while clock.now < deadline {
+        while clock.now < urlDeadline {
             if let href = await evaluateRaw("location.href"),
                href.contains("/marketplace/item/") {
                 found = URL(string: href)
                 break
             }
-            try? await Task.sleep(for: .milliseconds(150))
+            // Tight: this poll is now on the user's critical path, and the
+            // routing it waits on takes ~2.1s, so granularity is visible.
+            try? await Task.sleep(for: .milliseconds(50))
         }
 
-        // Restore the feed whether or not the tap landed — a stranded item page
-        // would break the next extraction.
-        _ = await evaluateRaw("(function(){ history.back(); return 'back'; })()")
-        try? await Task.sleep(for: .milliseconds(800))
+        guard let url = found else {
+            scheduleFeedRestore()
+            Logger.feed.info("tap card \(cardIndex): no id")
+            return nil
+        }
 
-        Logger.feed.info("tap card \(cardIndex): \(found?.absoluteString ?? "no id", privacy: .public)")
-        return found
+        let expectedID = url.marketplaceItemID
+        var best: ItemHarvest?
+        var announced = false
+        let harvestDeadline = clock.now + .seconds(8)
+        while clock.now < harvestDeadline {
+            if let json = await evaluateRaw(WebLiteScripts.extractDetail),
+               let data = json.data(using: .utf8),
+               let raw = try? JSONDecoder().decode(RawDetail.self, from: data),
+               !raw.loginWall,
+               // The href changed a moment ago and the document may still be
+               // catching up, so trust a read only once the page names itself
+               // as the listing we tapped.
+               raw.matches(expectedID) {
+                best = ItemHarvest(url: url, detail: raw)
+                if raw.hasText && !announced, let best {
+                    announced = true
+                    onPartial(best)
+                }
+                if raw.isComplete { break }
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+
+        scheduleFeedRestore()
+        Logger.feed.info("tap card \(cardIndex): \(url.absoluteString, privacy: .public) desc=\(best?.detail.description != nil) photos=\(best?.detail.photoURLs.count ?? 0)")
+        return best
+    }
+
+    /// Winds the feed back to the results page — *after* the caller has its
+    /// data. Restoring used to sit on the user's critical path for 800ms;
+    /// nothing about it needs to. Verified to restore all 26 cards.
+    private func scheduleFeedRestore() {
+        restoreTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await self.evaluateRaw("(function(){ history.back(); return 'back'; })()")
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+    }
+
+    /// The feed webview is briefly parked on an item page after a tap, so
+    /// anything that reads the results page waits for it to come back. The
+    /// user doesn't — that's the whole point.
+    private func awaitFeedRestored() async {
+        guard let task = restoreTask else { return }
+        await task.value
+        restoreTask = nil
     }
 
     // MARK: - WKNavigationDelegate

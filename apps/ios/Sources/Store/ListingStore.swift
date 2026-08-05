@@ -1,5 +1,10 @@
 import Foundation
 import SwiftUI
+import os
+
+extension Logger {
+    static let store = Logger(subsystem: "com.brianli101.marketplace", category: "store")
+}
 
 /// Owns what the grid shows: dedupe, filtering, paging, and the parse-health
 /// counters that back §8's telemetry and the debug parity report.
@@ -132,21 +137,52 @@ final class ListingStore: ObservableObject {
 
     // MARK: - Detail
 
-    /// Resolves the canonical item URL, then loads the detail page. Both steps
-    /// are lazy: nothing happens for listings the user never opens.
-    func enrich(_ listing: Listing) async -> Listing {
-        var updated = listing
+    /// Opens a listing. Lazy by construction: nothing here happens for listings
+    /// the user never taps.
+    ///
+    /// The tap that resolves the item id also *lands* the feed webview on the
+    /// item page, with the whole document already in its DOM, so the detail is
+    /// harvested there. Loading the page a second time through `DetailEngine`
+    /// is now the fallback for cards the tap can't reach.
+    ///
+    /// `onStage` can fire more than once. The description arrives seconds
+    /// before the gallery does, and holding it back until both were ready made
+    /// the screen look slower than it was.
+    func enrich(_ listing: Listing, onStage: @MainActor (Listing) -> Void = { _ in }) async -> Listing {
+        // §3.2 — a revisit inside a session costs nothing at all.
+        if let cached = detail.cachedDetail(for: listing.id) {
+            var updated = listing
+            updated.detail = cached
+            if updated.locationText == nil { updated.locationText = cached.locationText }
+            apply(updated)
+            onStage(updated)
+            return updated
+        }
 
+        // Two numbers, because they're the two the user experiences: when
+        // words appear, and when the screen is finished.
+        let started = Date()
+        if let harvest = await feed.openItem(cardIndex: listing.cardIndex,
+                                             onPartial: { partial in
+                                                 Logger.store.info("tap -> text in \(String(format: "%.2f", Date().timeIntervalSince(started)))s")
+                                                 onStage(Self.merging(listing, partial))
+                                             }) {
+            let updated = Self.merging(listing, harvest)
+            metrics.detailLatency(seconds: Date().timeIntervalSince(started), succeeded: true)
+            Logger.store.info("tap -> complete in \(String(format: "%.2f", Date().timeIntervalSince(started)))s (harvested in place)")
+            detail.cache(harvest.detail.listingDetail, for: updated.id)
+            apply(updated)
+            onStage(updated)
+            return updated
+        }
+
+        // The tap didn't land. Fall back to searching the desktop surface for
+        // the title and loading the item page separately — slower, needs a
+        // 6-character title, and can pick wrong among ties, which is why it is
+        // no longer the path anyone takes on purpose.
+        var updated = listing
         if updated.itemURL == nil {
-            // Tapping the card in the hidden feed resolves the id client-side
-            // and costs no page load at all. The desktop title search stays as
-            // a fallback for cards the tap can't reach — it's slower, needs a
-            // 6-character title, and can pick wrong among ties.
-            var resolved = await feed.resolveItemURL(cardIndex: listing.cardIndex)
-            if resolved == nil {
-                resolved = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
-            }
-            updated.itemURL = resolved
+            updated.itemURL = await detail.resolveItemURL(for: listing, citySlug: prefs.locationSlug)
             apply(updated)
         }
         guard let url = updated.itemURL else { return updated }
@@ -156,7 +192,19 @@ final class ListingStore: ObservableObject {
             // §3.2 — never replace text that's already correct; only fill gaps.
             if updated.locationText == nil { updated.locationText = detailValue.locationText }
             apply(updated)
+            onStage(updated)
         }
+        return updated
+    }
+
+    /// Folds a harvest onto the card the user tapped. Built from the original
+    /// listing every time rather than accumulated, so a partial stage and the
+    /// final one can't interleave into something neither of them said.
+    private static func merging(_ listing: Listing, _ harvest: FeedEngine.ItemHarvest) -> Listing {
+        var updated = listing
+        updated.itemURL = harvest.url
+        updated.detail = harvest.detail.listingDetail
+        if updated.locationText == nil { updated.locationText = harvest.detail.locationText }
         return updated
     }
 
