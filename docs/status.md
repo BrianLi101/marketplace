@@ -45,10 +45,20 @@ radius control is currently decorative) is in `mobile-location-radius-notes.md`.
     control is live on the detail screen's first frame, seconds before a cold
     listing's enrichment lands, so relying on enrichment to have written the
     profile would have left early saves blank.
-  - **Known defect:** the persisted thumbnail doesn't render after a relaunch —
-    fbcdn URLs are signed (`oh`, `oe`, session-scoped `_nc_gid`). Text fields
-    persist correctly. Tracked in the README to-do; needs image bytes cached
-    rather than the URL.
+  - **Known limit:** fbcdn thumbnail URLs are signed and expire. `oe` is a hex
+    unix expiry; measured across three cached listings, the window is
+    **106.9–107.5 hours** (~4.5 days) from fetch. Text fields persist
+    indefinitely, so a saved card older than that renders with a dead image.
+    Tracked in the README to-do; needs image bytes cached rather than the URL.
+
+    An earlier note here claimed persisted URLs stop resolving immediately.
+    That was wrong — the URL that produced the grey placeholder was still valid
+    for four more days and returned HTTP 200 on a direct fetch, and the same
+    card rendered correctly on the next launch. It was a one-off image-load
+    failure that `AsyncImage` never retries, which is its own to-do item. This
+    is exactly the trap in `docs/probe-checklist.md` §6: a broken image, a
+    mechanism invented to explain it, and signing parameters that happened to
+    fit the story — recorded without ever fetching the URL.
 - **Saving a listing.** A bookmark in the detail toolbar, keyed on `Listing.id`
   — the photo FBID out of the thumbnail CDN URL. That key is why the grid shows
   a save with no plumbing between the screens, and why the badge follows the

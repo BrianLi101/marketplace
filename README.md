@@ -188,12 +188,19 @@ item — several of these are harder or easier than they look.
 
 **Known defects**
 
-- [ ] **Saved listings lose their thumbnail.** Verified 2026-08-04: a saved card
-      renders its price, title, city and distance from the local store after a
-      relaunch, but the image is a grey placeholder. fbcdn URLs are signed —
-      `oh` signature, `oe` expiry, session-scoped `_nc_gid` — so a persisted URL
-      stops resolving while freshly-fetched cards in the same grid load fine.
-      Fix is to cache the image bytes for saved listings rather than the URL.
+- [ ] **A saved listing's thumbnail dies after ~4.5 days.** fbcdn URLs are
+      signed and time-limited: `oh` is a signature and `oe` is a hex unix
+      expiry. Measured across three cached listings on 2026-08-04, the window is
+      **106.9–107.5 hours** from fetch — call it 4.5 days. Saved items are meant
+      to persist indefinitely, so a saved card older than that will render its
+      price, title and city from the local store with a dead image. Fix is to
+      cache the image bytes for saved listings rather than the URL.
+- [ ] **`AsyncImage` never retries a failed load.** A single transient failure
+      leaves a permanent placeholder until the view is rebuilt — observed once
+      on a saved card whose URL was, on checking, still valid for four more days
+      and returning HTTP 200. Worth a retrying image view, especially now that
+      the home screen is served from cache and its images are the only part that
+      touches the network.
 
 ---
 
