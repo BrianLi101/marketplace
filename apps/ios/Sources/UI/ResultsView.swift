@@ -14,6 +14,10 @@ struct ResultsView: View {
     /// toolbar while it does, so this is also the difference between the
     /// filters button being there and not.
     @State private var isSearching = false
+    /// The term the results currently on screen belong to. Kept separately from
+    /// `store.query` because it has to be readable the instant the field is
+    /// dismissed, which is before the search it triggered has run.
+    @State private var activeTerm = ""
     @State private var selected: Listing?
     @State private var showSettings = false
     @State private var showFilters = false
@@ -53,7 +57,24 @@ struct ResultsView: View {
                         placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Search local listings")
             .searchSuggestions { SearchSuggestions() }
-            .onSubmit(of: .search) { Task { await search(searchText) } }
+            // Submitting ends the search session as well as running the search.
+            // Left open, iOS keeps the field in its focused state — no title, no
+            // toolbar, a Cancel button where the filters used to be — so every
+            // search rearranged the top of the screen and left it rearranged
+            // until the user found their way out of it. Results should look
+            // like the app, not like a search field with results under it.
+            //
+            // The term is not lost by this. `searchText` still holds it —
+            // measured "Bookshelf" at dismissal and a second later — and tapping
+            // the field brings it back with the cursor in it, ready to refine.
+            // A dismissed field just draws its prompt rather than its contents.
+            .onSubmit(of: .search) {
+                let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !term.isEmpty else { return }
+                activeTerm = term
+                isSearching = false
+                Task { await search(term) }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { profileButton }
                 ToolbarItem(placement: .topBarTrailing) { filtersButton }
@@ -81,24 +102,25 @@ struct ResultsView: View {
             .onChange(of: location.coordinate?.latitude) {
                 distances.setUserLocation(location.coordinate)
             }
-            // Emptying the search bar goes home, to the saved list — but
-            // *Cancel* empties it too, and cancelling a search field should not
-            // throw away the results behind it. It is the only way to put the
-            // toolbar back, so treating it as "go home" left the filters button
-            // unreachable from any screen that had results on it.
+            // Emptying the search bar goes home, to the saved list — but Cancel
+            // can empty it too, and cancelling a search field should not throw
+            // away the results behind it. Cancel used to be the only way back to
+            // the toolbar, which left the filters button unreachable from any
+            // screen that had results on it.
             //
-            // The two are told apart on the next tick, once both the text and
-            // the dismissal have landed: an empty field with the search UI
+            // So the two are told apart on the next tick, once the text and the
+            // dismissal have both landed: an empty field with the search UI
             // still up is a deliberate clear, and an empty field because the
-            // field went away is a cancel, which restores the term instead.
+            // field went away restores the term instead.
             .onChange(of: searchText) { _, text in
                 guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 Task { @MainActor in
                     await Task.yield()
                     if isSearching {
+                        activeTerm = ""
                         store.clearQuery()
-                    } else if let restored = store.query?.displayName {
-                        searchText = restored
+                    } else if !activeTerm.isEmpty {
+                        searchText = activeTerm
                     }
                 }
             }
@@ -400,6 +422,7 @@ struct ResultsView: View {
     private func search(_ term: String) async {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        activeTerm = trimmed
         prefs.recordSearch(trimmed)
         prefs.recordLastQuery(.search(trimmed))
         await run(.search(trimmed))
