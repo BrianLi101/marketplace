@@ -34,6 +34,8 @@ struct ContentView: View {
                 // states, and a signed-in account may carry its own saved city.
                 Button("Location") { controller.startLocationTests() }
                 Button("Slugs") { controller.startSlugSurvey() }
+                Button("Picker") { controller.startPickerProbe() }
+                Button("Persist") { controller.startPersistenceProbe() }
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -185,6 +187,88 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     func startSlugSurvey() {
         Task { await runSlugSurvey() }
+    }
+
+    func startPickerProbe() {
+        Task { await runPickerProbe() }
+    }
+
+    func startPersistenceProbe() {
+        Task { await runPersistenceProbe() }
+    }
+
+    /// Run **after** driving the picker by hand. Does the place it set survive?
+    ///
+    /// This decides how the app would use the picker. If the choice is session
+    /// state, the app sets a location once in a hidden webview and every later
+    /// search inherits it — no ids, no slugs, no URL construction. If it isn't,
+    /// the picker is only useful as a *resolver*: drive it once, learn the place
+    /// id, and address that id by URL forever after.
+    ///
+    /// Cookies persist across relaunch here (`.default()` store), so a fresh
+    /// launch is a fair test of the session rather than of the page.
+    func runPersistenceProbe() async {
+        webView.customUserAgent = Self.desktopUA
+
+        // No place segment at all: whatever comes back is what the session
+        // believes, not what the URL asked for.
+        await load("https://www.facebook.com/marketplace/search/?query=desk")
+        try? await Task.sleep(for: .seconds(9))
+        emit("PERSIST[no_place] \(await js(Self.slugVerdictJS))")
+        emit("PERSIST[ids] \(await js(Self.placeIDHarvestJS))")
+
+        // And the app's own form of URL, to see whether a place segment still
+        // overrides a session location.
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk")
+        try? await Task.sleep(for: .seconds(9))
+        emit("PERSIST[slug_sf] \(await js(Self.slugVerdictJS))")
+
+        emit("=== PERSISTPROBE COMPLETE ===")
+    }
+
+    /// Can the user pick a place the app has never seen — Toronto, from San
+    /// Francisco?
+    ///
+    /// Harvesting ids from search payloads (`location-targeting.md` §6) only
+    /// ever learns places the user already got listings from, so it cannot
+    /// answer that. Three candidate mechanisms, cheapest first:
+    ///
+    ///  1. **A ZIP or postcode as the path segment.** If Facebook resolves one,
+    ///     arbitrary location is a text field and nothing else.
+    ///  2. **Slugs for major cities.** Known to work for metros; the question is
+    ///     only whether that extends past the US.
+    ///  3. **Facebook's own location picker**, driven in a webview. It accepts
+    ///     city, ZIP and neighbourhood, and resolves them server-side — so if it
+    ///     can be driven, it is a general place resolver we don't have to build,
+    ///     and whatever it navigates to tells us the id it chose.
+    ///
+    /// Synthetic clicks do work on this site (`filter-parameters.md` §4
+    /// correction), so the picker is worth trying rather than assuming.
+    func runPickerProbe() async {
+        webView.customUserAgent = Self.desktopUA
+        let query = "?query=desk"
+
+        // 1 and 2 — entry forms that need no interaction at all.
+        for place in ["94110", "94103", "toronto", "vancouver", "london", "m5v"] {
+            await load("https://www.facebook.com/marketplace/\(place)/search/\(query)")
+            try? await Task.sleep(for: .seconds(8))
+            emit("ENTRY[\(place)] \(await js(Self.slugVerdictJS))")
+        }
+
+        // 3 — the picker itself.
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/\(query)")
+        try? await Task.sleep(for: .seconds(9))
+        emit("PICKER[candidates] \(await js(Self.pickerCandidatesJS))")
+
+        emit("PICKER[open] \(await js(Self.clickPickerJS))")
+        try? await Task.sleep(for: .seconds(4))
+        emit("PICKER[dialog] \(await js(Self.dialogDumpJS))")
+
+        emit("PICKER[type] \(await js(Self.typeTorontoJS))")
+        try? await Task.sleep(for: .seconds(4))
+        emit("PICKER[options] \(await js(Self.dialogDumpJS))")
+
+        emit("=== PICKERPROBE COMPLETE ===")
     }
 
     /// Two follow-ups to `runLocationTests`, which established that a *valid*
@@ -3377,6 +3461,85 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         cards: labels.length,
         top: top.slice(0, 3).map(function(c){ return c + ' x' + counts[c]; })
       });
+    })()
+    """
+
+    /// What on a search page looks like it opens the location control.
+    static let pickerCandidatesJS = """
+    (function(){
+      var out = [], els = document.querySelectorAll('[role="button"], button, [role="link"]');
+      for (var i = 0; i < els.length && out.length < 20; i++) {
+        var e = els[i];
+        var text = (e.innerText || '').trim().replace(/\\s+/g, ' ');
+        var label = e.getAttribute('aria-label') || '';
+        if (/San Francisco|Location|Within|\\d+\\s*mi\\b/i.test(text + ' ' + label)) {
+          out.push({ tag: e.tagName, label: label.slice(0, 50), text: text.slice(0, 50) });
+        }
+      }
+      return JSON.stringify({ total: els.length, candidates: out });
+    })()
+    """
+
+    /// Clicks whatever looks most like the location control, and says what it
+    /// clicked — a click on the wrong element is the classic way to record a
+    /// false negative here (checklist §2).
+    static let clickPickerJS = """
+    (function(){
+      var els = document.querySelectorAll('[role="button"], button, [role="link"]');
+      for (var i = 0; i < els.length; i++) {
+        var e = els[i];
+        var text = (e.innerText || '').trim().replace(/\\s+/g, ' ');
+        var label = e.getAttribute('aria-label') || '';
+        if (/San Francisco|Location/i.test(text + ' ' + label)) {
+          e.click();
+          return JSON.stringify({ clicked: true, label: label.slice(0, 60), text: text.slice(0, 60) });
+        }
+      }
+      return JSON.stringify({ clicked: false });
+    })()
+    """
+
+    /// Whatever dialog is now open: its text, its inputs, and any listbox rows.
+    static let dialogDumpJS = """
+    (function(){
+      var dialogs = document.querySelectorAll('[role="dialog"]');
+      if (!dialogs.length) {
+        return JSON.stringify({ dialogs: 0, url: location.href.slice(0, 110),
+                                bodyHint: (document.body.innerText || '').slice(0, 160) });
+      }
+      var d = dialogs[dialogs.length - 1];
+      var inputs = [];
+      d.querySelectorAll('input').forEach(function(i){
+        inputs.push({ type: i.type, label: (i.getAttribute('aria-label') || i.placeholder || '').slice(0, 50), value: i.value.slice(0, 40) });
+      });
+      var options = [];
+      d.querySelectorAll('[role="option"], li, [role="menuitem"]').forEach(function(o){
+        var t = (o.innerText || '').trim().replace(/\\s+/g, ' ');
+        if (t && options.length < 8) options.push(t.slice(0, 60));
+      });
+      return JSON.stringify({
+        dialogs: dialogs.length,
+        text: (d.innerText || '').replace(/\\s+/g, ' ').slice(0, 220),
+        inputs: inputs,
+        options: options,
+        url: location.href.slice(0, 110)
+      });
+    })()
+    """
+
+    /// React ignores a plain `input.value = x`; the native setter plus a
+    /// bubbling `input` event is what its onChange actually listens for.
+    static let typeTorontoJS = """
+    (function(){
+      var dialogs = document.querySelectorAll('[role="dialog"]');
+      var scope = dialogs.length ? dialogs[dialogs.length - 1] : document;
+      var input = scope.querySelector('input[type="text"], input:not([type])');
+      if (!input) return JSON.stringify({ typed: false, reason: 'no input' });
+      var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      input.focus();
+      setter.call(input, 'Toronto');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return JSON.stringify({ typed: true, label: (input.getAttribute('aria-label') || input.placeholder || '').slice(0, 50) });
     })()
     """
 

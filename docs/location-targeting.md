@@ -176,7 +176,57 @@ IP-inferred search is what we have, and its results carry ids for the cities
 *near* the user rather than necessarily the user's own. Step 3 covers the common
 case; step 4 covers the rest.
 
-## 8. Open questions
+## 8. Somewhere the user has never been: Facebook's own picker
+
+§6 only learns places the user already got listings from, so it cannot answer
+"I'm in San Francisco and I want to browse Toronto". Three routes tested.
+
+**ZIP codes are not a path segment.** `94110`, `94103` and the Canadian `m5v`
+all rewrote to `/marketplace/category/search/` and served San Francisco. Whatever
+the picker means by "ZIP code", it is not something the URL accepts.
+
+**Slugs do work worldwide for large cities.** `toronto` → Toronto ON ×15,
+`vancouver` → Vancouver BC ×8, `london` accepted. So the slug path is not a
+US-only mechanism; it is a big-place mechanism, and Toronto specifically needs
+nothing more than `/marketplace/toronto/search/`.
+
+**The picker is fully drivable, logged out.** This is the general answer. On a
+desktop search page:
+
+| step | how | result |
+|---|---|---|
+| open it | `.click()` on the element whose aria-label is `Location: San Francisco, California, Within 5 mi` | dialog "Change location — Search by city, neighborhood or ZIP code", with a `Location` input and a `Radius` select |
+| type | native `value` setter + a bubbling `input` event | typeahead returned **Toronto, Ontario (City)**, *1 King St W, Toronto* (address), *New Toronto* (neighbourhood) |
+| choose | tap the row | input filled, map recentred on Toronto with a radius circle |
+| apply | tap **Apply** | results became Toronto, ON in CA$; the chip read "Toronto · 5 mi" |
+
+React ignores a plain `input.value = x`, which is why the native setter matters.
+The typeahead options render in a **portal outside** `[role="dialog"]` — the
+first pass reported `options: []` and the screenshot showed three of them, which
+is checklist §2 again: the probe was scoped to the wrong subtree, not the site
+failing to answer.
+
+**And the choice persists.** After relaunching the harness — new process, same
+cookie jar — a URL with *no place segment at all* was rewritten to
+`/marketplace/toronto/search/` and returned Toronto ×15. So the picker writes
+durable session state, not page state.
+
+**But an explicit place still overrides it**: `/marketplace/sanfrancisco/search/`
+immediately returned San Francisco ×8 from that same Toronto session. The URL
+wins, which is what makes the picker usable as a *resolver* rather than as a
+mode the app has to stay in.
+
+That is the useful shape: **drive the picker once to learn a place, then address
+that place by URL forever after.** The Toronto run yielded exactly what a
+resolver needs —
+
+```
+Toronto, ON → 110941395597405
+```
+
+— harvested from the payload of the page the picker landed on.
+
+## 9. Open questions
 
 - **Does a place id ever expire or move?** Ids look like stable page ids, but
   nothing here tested one older than this session. A stored map wants a
@@ -192,3 +242,15 @@ case; step 4 covers the rest.
 - **Does a signed-in account override all of this** with its own saved city?
   Everything above is logged out. Worth checking before relying on step 4's
   fallback for signed-in users.
+- **Does the picker's Radius control actually filter?** It is the one thing in
+  this dialog the URL has never been able to set, and `radius` as a parameter is
+  decorative on both surfaces (`filter-parameters.md` §3). The Toronto run left
+  it at its default 5 mi and returned Toronto ×15, which proves nothing either
+  way. If Facebook's own control does bite, driving it is the only known route
+  to a real server-side radius.
+- **Does the picker accept a ZIP, given the URL doesn't?** Its own prompt says
+  "city, neighborhood or ZIP code" and only a city was tried. Worth one run,
+  because a ZIP is the easiest thing for a user to type unambiguously.
+- **Is the picker reachable on the mobile surface?** Everything in §8 is
+  desktop. Mobile renders a Distance chip whose behaviour is untested
+  (`filter-parameters.md` §4).
