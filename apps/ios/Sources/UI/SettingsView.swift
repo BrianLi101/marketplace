@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var location: LocationProvider
     @EnvironmentObject private var store: ListingStore
+    @EnvironmentObject private var viewed: ViewedListings
     @Environment(\.dismiss) private var dismiss
     @State private var showSignIn = false
 
@@ -34,9 +35,14 @@ struct SettingsView: View {
                     LabeledContent("Location", value: prefs.locationName ?? "Not set")
                 }
 
-                Section("Recent searches") {
+                Section("History") {
                     Button("Clear search history") { prefs.recentSearches = [] }
                         .disabled(prefs.recentSearches.isEmpty)
+                    Button("Clear viewing history") { viewed.clear() }
+                        .disabled(viewed.isEmpty)
+                    Text("Viewing history is what \"Only new listings\" filters against, and what fills Recently viewed. It stays on this device — Facebook is never told which listings you opened.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section {

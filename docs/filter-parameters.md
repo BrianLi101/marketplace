@@ -153,7 +153,36 @@ so this widens coverage without duplicating everything.
 It is coverage, not precision — the sets overlap unpredictably and each still
 reaches 60+ mi. Distance still has to be enforced client-side afterwards.
 
-## 8. Open questions
+## 8. The second class: filters that are ours
+
+Everything above is a request *to* Facebook. There is a second class that runs
+entirely on the device, against state Facebook doesn't have, and the filter
+sheet labels each one so the difference is visible rather than folklore.
+
+| Filter | Where it runs | Why it isn't a parameter |
+|---|---|---|
+| Distance | device | `radius` is decorative on both surfaces (§3) |
+| Only new listings | device | Facebook keeps no record of what *this user* opened |
+
+"Only new" filters against `ViewedListings`, which records a listing id and a
+timestamp when the user opens it. Two properties are worth stating because they
+were decisions rather than accidents:
+
+**Seen means opened.** Not scrolled past. A tap is unambiguous evidence that the
+user chose the listing; anything looser needs a dwell-and-viewport judgement the
+grid can't make honestly.
+
+**The hidden set is snapshotted per search, not read live.** Reading it live
+means opening a listing and coming back makes that card vanish and the grid
+reflow around the gap — the filter working, but indistinguishable from a bug.
+So "new" means new *as of when you ran this search*: cards opened since keep
+their place and pick up a "Seen" chip, and drop out on the next search.
+
+This is also the only filter the app has that Facebook could not implement
+without being told what you looked at — which is the argument for the feature
+and the reason the record never leaves the device.
+
+## 9. Open questions
 
 - Does `daysSinceListed` combined with mobile's pagination have any equivalent?
   It can't be passed, but if a listing's age were derivable from a card the same

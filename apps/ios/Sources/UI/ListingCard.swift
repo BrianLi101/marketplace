@@ -5,6 +5,7 @@ struct ListingCard: View {
     let namespace: Namespace.ID
     @EnvironmentObject private var distances: DistanceResolver
     @EnvironmentObject private var saved: SavedListings
+    @EnvironmentObject private var viewed: ViewedListings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -78,6 +79,22 @@ struct ListingCard: View {
         // Top-*trailing*, so it can never collide with the "Price drop" badge
         // above. Read-only here: saving is a deliberate act on the detail
         // screen, not something a thumb can do by brushing the grid.
+        // Bottom-leading, the one free corner — "Price drop" sits top-left and
+        // the bookmark top-right. Live rather than snapshotted, unlike the
+        // "only new" filter: a card marking itself the moment you come back
+        // from it is useful feedback, where a card *vanishing* at that moment
+        // is not (see `hiddenAsViewed`).
+        .overlay(alignment: .bottomLeading) {
+            if viewed.contains(listing.id) {
+                Text("Seen")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .padding(8)
+            }
+        }
         .overlay(alignment: .topTrailing) {
             if saved.contains(listing.id) {
                 Image(systemName: "bookmark.fill")

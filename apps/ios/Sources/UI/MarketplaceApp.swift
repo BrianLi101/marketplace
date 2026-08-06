@@ -8,6 +8,7 @@ struct MarketplaceApp: App {
     @StateObject private var location = LocationProvider()
     @StateObject private var distances = DistanceResolver.shared
     @StateObject private var saved = SavedListings.shared
+    @StateObject private var viewed = ViewedListings.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -18,6 +19,7 @@ struct MarketplaceApp: App {
                 .environmentObject(location)
                 .environmentObject(distances)
                 .environmentObject(saved)
+                .environmentObject(viewed)
         }
         // Cache writes are coalesced on a 2s debounce, which is right for a
         // burst of writes and wrong for an app about to be killed. Leaving

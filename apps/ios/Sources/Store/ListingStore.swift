@@ -466,8 +466,11 @@ final class ListingStore: ObservableObject {
         cache.store(listing, capture: capture)
     }
 
-    /// The saved items, most recently saved first.
-    func savedListings(_ ids: [String]) -> [Listing] {
+    /// Cards for a list of ids, in the order given, entirely from disk — this
+    /// is what lets the home screen's saved grid and recently-viewed strip
+    /// render with no network at all. Ids with no profile behind them are
+    /// skipped rather than rendered blank.
+    func listings(for ids: [String]) -> [Listing] {
         cache.listings(for: ids)
     }
 

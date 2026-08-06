@@ -55,6 +55,11 @@ struct FilterSheet: View {
     @State private var minPriceText = ""
     @State private var maxPriceText = ""
 
+    /// What a change to any of these costs: a fresh search.
+    ///
+    /// `hideViewed` is deliberately absent. It is applied to listings already on
+    /// screen, so toggling it needs no network at all — including it here would
+    /// spend a whole page load to end up with the same cards, minus some.
     private struct FilterSnapshot: Equatable {
         var sort: SearchQuery.Sort
         var delivery: SearchQuery.Delivery
@@ -79,6 +84,9 @@ struct FilterSheet: View {
                     section("Location") { locationControl }
                     section("Distance", footnote: "Applied on this device — Facebook ignores distance in a search.") {
                         distanceControl
+                    }
+                    section("Viewed", footnote: "Applied on this device — Facebook has no filter like this.") {
+                        viewedControl
                     }
                     section("Delivery") { deliveryControl }
                     section("Price") { priceControl }
@@ -191,6 +199,23 @@ struct FilterSheet: View {
                 prefs.radiusKM = km
             }
         }
+    }
+
+    /// The one filter with no remote counterpart at all. Distance at least has
+    /// a `radius` parameter Facebook ignores; this has nothing on the other end
+    /// — it runs entirely off what the app itself remembers.
+    private var viewedControl: some View {
+        Toggle(isOn: $prefs.hideViewed) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Only new listings").font(.subheadline)
+                Text("Hide anything you've already opened")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var deliveryControl: some View {

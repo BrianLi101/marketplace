@@ -20,6 +20,7 @@ final class Preferences: ObservableObject {
         static let minPrice = "minPrice"
         static let maxPrice = "maxPrice"
         static let conditions = "itemConditions"
+        static let hideViewed = "hideViewed"
     }
 
     private let defaults: UserDefaults
@@ -55,6 +56,14 @@ final class Preferences: ObservableObject {
     @Published var conditions: [SearchQuery.Condition] {
         didSet { defaults.set(conditions.map(\.rawValue).joined(separator: ","), forKey: Key.conditions) }
     }
+
+    /// Hide listings the user has already opened (`ViewedListings`).
+    ///
+    /// Unlike everything above it, this one is ours: it is applied on device,
+    /// against a record Facebook doesn't keep, and there is no parameter that
+    /// would ask for it. Off by default — it is a way to re-scan a search you
+    /// have already been through, not the normal way to browse.
+    @Published var hideViewed: Bool { didSet { defaults.set(hideViewed, forKey: Key.hideViewed) } }
 
     static let maxRecentSearches = 12
 
@@ -98,6 +107,7 @@ final class Preferences: ObservableObject {
         conditions = (defaults.string(forKey: Key.conditions) ?? "")
             .split(separator: ",")
             .compactMap { SearchQuery.Condition(rawValue: String($0)) }
+        hideViewed = defaults.bool(forKey: Key.hideViewed)
     }
 
     /// Back to the app's opinionated defaults, not to "no filters at all" —
@@ -111,6 +121,7 @@ final class Preferences: ObservableObject {
         minPrice = nil
         maxPrice = nil
         conditions = []
+        hideViewed = false
     }
 
     /// Whether anything differs from those defaults — drives the dot on the
@@ -122,6 +133,7 @@ final class Preferences: ObservableObject {
             || minPrice != nil
             || maxPrice != nil
             || !conditions.isEmpty
+            || hideViewed
     }
 
     /// Remembers what to reopen on. Categories are remembered too — browsing

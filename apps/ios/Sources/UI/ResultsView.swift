@@ -7,13 +7,30 @@ struct ResultsView: View {
     @EnvironmentObject private var location: LocationProvider
     @EnvironmentObject private var distances: DistanceResolver
     @EnvironmentObject private var saved: SavedListings
+    @EnvironmentObject private var viewed: ViewedListings
 
     @State private var searchText = ""
+    /// Whether the search field currently owns the screen. iOS hides the
+    /// toolbar while it does, so this is also the difference between the
+    /// filters button being there and not.
+    @State private var isSearching = false
     @State private var selected: Listing?
     @State private var showSettings = false
     @State private var showFilters = false
 
     @State private var showSignIn = false
+
+    /// Which listings the "only new" filter is hiding *right now*.
+    ///
+    /// A snapshot of `ViewedListings`, taken when a search runs or when the
+    /// filter is switched on — never read live. Reading it live would mean that
+    /// opening a listing and coming back made that card vanish under the user's
+    /// thumb and the grid reflow around the gap, which reads as a bug even
+    /// though it is the filter working. "New" therefore means new *as of when
+    /// you ran this search*, and things opened since stay where they were until
+    /// the next one.
+    @State private var hiddenAsViewed: Set<String> = []
+
     @Namespace private var heroNamespace
 
     var body: some View {
@@ -32,6 +49,7 @@ struct ResultsView: View {
             // the filters that shape the search, not detached at the other end
             // of the screen from them.
             .searchable(text: $searchText,
+                        isPresented: $isSearching,
                         placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Search local listings")
             .searchSuggestions { SearchSuggestions() }
@@ -63,10 +81,34 @@ struct ResultsView: View {
             .onChange(of: location.coordinate?.latitude) {
                 distances.setUserLocation(location.coordinate)
             }
-            // Emptying the search bar goes home, to the saved list.
+            // Emptying the search bar goes home, to the saved list — but
+            // *Cancel* empties it too, and cancelling a search field should not
+            // throw away the results behind it. It is the only way to put the
+            // toolbar back, so treating it as "go home" left the filters button
+            // unreachable from any screen that had results on it.
+            //
+            // The two are told apart on the next tick, once both the text and
+            // the dismissal have landed: an empty field with the search UI
+            // still up is a deliberate clear, and an empty field because the
+            // field went away is a cancel, which restores the term instead.
             .onChange(of: searchText) { _, text in
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    store.clearQuery()
+                guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    if isSearching {
+                        store.clearQuery()
+                    } else if let restored = store.query?.displayName {
+                        searchText = restored
+                    }
+                }
+            }
+            // Switching the filter on takes its snapshot there and then, so it
+            // applies to what's already on screen instead of waiting for the
+            // next search. Switching it off drops the snapshot, and everything
+            // it was holding back comes straight back.
+            .onChange(of: prefs.hideViewed) { _, isOn in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    hiddenAsViewed = isOn ? viewed.allIDs : []
                 }
             }
             .task {
@@ -136,62 +178,127 @@ struct ResultsView: View {
                 InlineNotice(text: "Nothing found nearby. Try a wider radius.", actionTitle: nil, action: nil)
                     .padding()
             } else if store.query == nil {
-                savedHome
+                home
             } else {
                 grid
             }
         }
     }
 
-    /// With an empty search bar, the home screen is what the user kept.
+    /// With an empty search bar, the home screen is what the user kept and what
+    /// they looked at.
     ///
     /// Entirely local — every card here comes out of the profile store, which
-    /// is exactly why it can render with no network at all. Saving writes the
-    /// card at the moment it's saved, so there is no such thing as a saved
-    /// listing with nothing behind it.
+    /// is exactly why it can render with no network at all. Both saving and
+    /// opening write the card at the moment they happen, so neither list can
+    /// contain a row with nothing behind it.
     @ViewBuilder
-    private var savedHome: some View {
-        let items = store.savedListings(saved.ids)
-        if items.isEmpty {
+    private var home: some View {
+        let savedItems = store.listings(for: saved.ids)
+        // Saved listings are excluded from the strip: they are already on this
+        // screen, in the grid directly above, and the same card twice is
+        // clutter rather than information. It also keeps `heroNamespace` ids
+        // unique across the screen, which `matchedGeometryEffect` requires.
+        let recentIDs = viewed.ids
+            .filter { !saved.contains($0) }
+            .prefix(ViewedListings.recentStripLength)
+        let recentItems = store.listings(for: Array(recentIDs))
+
+        if savedItems.isEmpty && recentItems.isEmpty {
             EmptyStatePrompt(hasSavedNothing: saved.isEmpty)
         } else {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Saved")
-                    .font(.title3.weight(.semibold))
-                    .padding(.horizontal, 12)
-                StaggeredGrid(items: items, columns: 2, spacing: 12) { listing in
-                    ListingCard(listing: listing, namespace: heroNamespace)
-                        .onTapGesture { selected = listing }
+            VStack(alignment: .leading, spacing: 24) {
+                if !savedItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        sectionTitle("Saved")
+                        StaggeredGrid(items: savedItems, columns: 2, spacing: 12) { listing in
+                            ListingCard(listing: listing, namespace: heroNamespace)
+                                .onTapGesture { selected = listing }
+                        }
+                        .padding(.horizontal, 12)
+                    }
                 }
-                .padding(.horizontal, 12)
+                if !recentItems.isEmpty {
+                    recentlyViewed(recentItems)
+                }
             }
             .padding(.top, 4)
         }
     }
 
-    /// The grid, after the one filter Facebook won't apply for us.
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.title3.weight(.semibold))
+            .padding(.horizontal, 12)
+    }
+
+    /// Everything opened lately, newest first.
     ///
+    /// A horizontal strip rather than a second grid: this is a way back to
+    /// something half-remembered, not a list to browse, and it shouldn't
+    /// compete for space with the listings the user deliberately kept.
+    private func recentlyViewed(_ items: [Listing]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Recently viewed")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(items) { listing in
+                        RecentCard(listing: listing)
+                            .onTapGesture { selected = listing }
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+        }
+    }
+
+    /// The grid, after the two filters Facebook won't apply for us — and the
+    /// count of what each one took, because a filter that removes cards without
+    /// saying so is indistinguishable from a broken search.
+    private struct Winnowed {
+        var items: [Listing] = []
+        var hiddenAsViewed = 0
+        var hiddenByDistance = 0
+    }
+
     /// Distance is enforced here because no surface honours `radius` — the chip
     /// changes and the results don't (`docs/filter-parameters.md` §3). Listings
     /// whose distance isn't known yet are **kept**, not hidden: geocoding is
     /// asynchronous, and filtering on missing data would make cards disappear
     /// and come back as the queue drains.
-    private var visibleListings: [Listing] {
-        guard prefs.radiusKM > 0 else { return store.listings }
-        return store.listings.filter { listing in
+    ///
+    /// Already-viewed goes first, so the distance count that reaches the user
+    /// describes only cards they could otherwise have seen — counting the same
+    /// listing under both headings would overstate what's being held back.
+    private var winnowed: Winnowed {
+        var result = Winnowed()
+        for listing in store.listings {
+            if hiddenAsViewed.contains(listing.id) {
+                result.hiddenAsViewed += 1
+                continue
+            }
+            guard prefs.radiusKM > 0 else {
+                result.items.append(listing)
+                continue
+            }
             let coordinate = listing.detail.flatMap { detail -> CLLocationCoordinate2D? in
                 guard let latitude = detail.latitude, let longitude = detail.longitude else { return nil }
                 return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
             }
-            guard let km = distances.distanceKM(for: listing.locationText, coordinate: coordinate)
-            else { return true }
-            return km <= Double(prefs.radiusKM)
+            if let km = distances.distanceKM(for: listing.locationText, coordinate: coordinate),
+               km > Double(prefs.radiusKM) {
+                result.hiddenByDistance += 1
+            } else {
+                result.items.append(listing)
+            }
         }
+        return result
     }
 
     private var grid: some View {
         VStack(spacing: 0) {
-            let items = visibleListings
+            let winnowed = winnowed
+            let items = winnowed.items
             StaggeredGrid(items: items, columns: 2, spacing: 12) { listing in
                 ListingCard(listing: listing, namespace: heroNamespace)
                     .onTapGesture { selected = listing }
@@ -204,14 +311,13 @@ struct ResultsView: View {
                 }
             }
 
-            // Distance is filtered here rather than by Facebook, so listings
+            // Both filters run here rather than at Facebook, so listings
             // disappear with no explanation unless one is given. That matters
             // most with "Newest first", which genuinely does return results
             // 60-90 mi out — a search can go from fifteen cards to one, and
             // without this it just looks broken.
-            let hidden = store.listings.count - items.count
-            if hidden > 0 {
-                distanceNotice(hidden: hidden, showingNothing: items.isEmpty)
+            if winnowed.hiddenAsViewed > 0 || winnowed.hiddenByDistance > 0 {
+                hiddenNotice(winnowed)
             }
 
             if store.session == .unauthed, !items.isEmpty {
@@ -220,20 +326,47 @@ struct ResultsView: View {
         }
     }
 
-    private func distanceNotice(hidden: Int, showingNothing: Bool) -> some View {
-        VStack(spacing: 8) {
-            Text(showingNothing
-                 ? "Nothing within \(SearchQuery.kilometresToMiles(prefs.radiusKM)) mi"
-                 : "\(hidden) more further than \(SearchQuery.kilometresToMiles(prefs.radiusKM)) mi")
+    /// One footer for both on-device filters, with a way out of each — which is
+    /// the point of naming them separately. "Nothing found" plus a single
+    /// undo button leaves the user guessing which filter emptied the screen.
+    private func hiddenNotice(_ w: Winnowed) -> some View {
+        let showingNothing = w.items.isEmpty
+        return VStack(spacing: 8) {
+            Text(hiddenSummary(w))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Show any distance") { prefs.radiusKM = 0 }
-                .font(.subheadline.weight(.semibold))
+            HStack(spacing: 20) {
+                if w.hiddenAsViewed > 0 {
+                    Button("Show viewed") { prefs.hideViewed = false }
+                }
+                if w.hiddenByDistance > 0 {
+                    Button("Show any distance") { prefs.radiusKM = 0 }
+                }
+            }
+            .font(.subheadline.weight(.semibold))
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 32)
         .padding(.vertical, showingNothing ? 40 : 24)
+    }
+
+    private func hiddenSummary(_ w: Winnowed) -> String {
+        let miles = SearchQuery.kilometresToMiles(prefs.radiusKM)
+        switch (w.hiddenAsViewed > 0, w.hiddenByDistance > 0, w.items.isEmpty) {
+        case (true, true, true):
+            return "Nothing new within \(miles) mi"
+        case (true, true, false):
+            return "\(w.hiddenAsViewed) already viewed, \(w.hiddenByDistance) further than \(miles) mi"
+        case (true, false, true):
+            return "You've opened all \(w.hiddenAsViewed) of these already"
+        case (true, false, false):
+            return "\(w.hiddenAsViewed) you've already viewed"
+        case (false, _, true):
+            return "Nothing within \(miles) mi"
+        default:
+            return "\(w.hiddenByDistance) more further than \(miles) mi"
+        }
     }
 
     /// The bottom of an anonymous result set really is the bottom — Facebook
@@ -269,7 +402,15 @@ struct ResultsView: View {
         guard !trimmed.isEmpty else { return }
         prefs.recordSearch(trimmed)
         prefs.recordLastQuery(.search(trimmed))
-        await store.run(makeQuery(.search(trimmed)))
+        await run(.search(trimmed))
+    }
+
+    /// Every search goes through here, which is what makes the "only new"
+    /// snapshot honest: it is taken once, at the start of a search, and holds
+    /// for as long as those results are on screen.
+    private func run(_ kind: SearchQuery.Kind) async {
+        hiddenAsViewed = prefs.hideViewed ? viewed.allIDs : []
+        await store.run(makeQuery(kind))
     }
 
     /// Currently unreachable: the category pills that called it are gone, and
@@ -280,12 +421,12 @@ struct ResultsView: View {
     /// check the payload parses there first.
     private func browse(category: String) async {
         prefs.recordLastQuery(.category(category))
-        await store.run(makeQuery(.category(category)))
+        await run(.category(category))
     }
 
     private func rerunCurrentQuery() async {
         guard let existing = store.query else { return }
-        await store.run(makeQuery(existing.kind))
+        await run(existing.kind)
     }
 
     /// Location is an enhancement, never a gate: searching uses whatever
@@ -346,6 +487,44 @@ private struct SearchSuggestions: View {
                     .searchCompletion(name)
             }
         }
+    }
+}
+
+/// A listing at strip size: square photo, price, one line of title.
+///
+/// Deliberately not a `ListingCard`. That card is built for a column of a
+/// staggered grid — variable height, distance line, saved bookmark — and none of
+/// that survives being squeezed into a 128pt horizontal rail. It also carries a
+/// `matchedGeometryEffect`, which would collide with the grid above if the same
+/// listing appeared in both.
+private struct RecentCard: View {
+    let listing: Listing
+
+    private static let side: CGFloat = 128
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Color(.tertiarySystemFill)
+                .frame(width: Self.side, height: Self.side)
+                .overlay {
+                    AsyncImage(url: listing.thumbnailURL) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFill()
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            Text(listing.priceText ?? "—")
+                .font(.subheadline.weight(.semibold))
+            if let title = listing.title {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: Self.side, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 

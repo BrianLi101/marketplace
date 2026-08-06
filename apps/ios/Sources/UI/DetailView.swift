@@ -12,6 +12,7 @@ struct DetailView: View {
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var distances: DistanceResolver
     @EnvironmentObject private var saved: SavedListings
+    @EnvironmentObject private var viewed: ViewedListings
     @State private var current: Listing
     @State private var didFail = false
     @State private var isEnriching = true
@@ -53,6 +54,18 @@ struct DetailView: View {
             }
         }
         .task {
+            // Opening a listing is what "seen" means — this is the only place
+            // it's recorded, so every route in counts and none can miss it.
+            // Before enrichment rather than after: a listing whose detail fetch
+            // fails was still deliberately opened, and a slow one shouldn't be
+            // forgotten because the user backed out while it loaded.
+            viewed.record(listing.id)
+            // And the card itself, for the same reason `saveButton` does it —
+            // the recently-viewed strip draws from the profile store, so
+            // something has to be there whether or not the fetch below lands.
+            // Never destructive: `store` keeps any detail already held.
+            store.remember(listing)
+
             distances.resolve(place: listing.locationText)
             // Words land seconds before the gallery, so they're shown the
             // moment they exist rather than waiting on the photos. The strip
