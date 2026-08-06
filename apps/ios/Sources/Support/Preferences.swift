@@ -17,6 +17,9 @@ final class Preferences: ObservableObject {
         static let lastQueryValue = "lastQueryValue"
         static let sortBy = "sortBy"
         static let deliveryMethod = "deliveryMethod"
+        static let minPrice = "minPrice"
+        static let maxPrice = "maxPrice"
+        static let conditions = "itemConditions"
     }
 
     private let defaults: UserDefaults
@@ -42,14 +45,43 @@ final class Preferences: ObservableObject {
     /// page where shipping was mixed in throughout.
     @Published var delivery: SearchQuery.Delivery { didSet { defaults.set(delivery.rawValue, forKey: Key.deliveryMethod) } }
 
+    /// Nil means unbounded on that end. Stored as -1 rather than absent so a
+    /// cleared bound is distinguishable from never having set one.
+    @Published var minPrice: Int? { didSet { defaults.set(minPrice ?? -1, forKey: Key.minPrice) } }
+    @Published var maxPrice: Int? { didSet { defaults.set(maxPrice ?? -1, forKey: Key.maxPrice) } }
+
+    /// Comma-joined raw values, which is also the shape Facebook's own
+    /// `itemCondition` parameter takes.
+    @Published var conditions: [SearchQuery.Condition] {
+        didSet { defaults.set(conditions.map(\.rawValue).joined(separator: ","), forKey: Key.conditions) }
+    }
+
     static let maxRecentSearches = 12
-    static let radiusOptions = [2, 5, 10, 20, 40, 65, 100, 250]  // km; Facebook's own ladder
+
+    /// Kilometres, chosen so each one is a round number of *miles* — the unit
+    /// the UI shows and the one people think in. 16 km is 10 mi, 32 is 20, and
+    /// so on. The old ladder was round in kilometres and consequently showed
+    /// "6 mi" and "62 mi".
+    static let radiusOptions = [2, 3, 8, 16, 32, 64, 161]   // 1, 2, 5, 10, 20, 40, 100 mi
+
+    /// 10 miles. An opinionated default for a local-browsing app: far enough to
+    /// find things, close enough that collecting them is still plausible.
+    static let defaultRadiusKM = 16
+
     static let suggestedCategories = ["Furniture", "Electronics", "Free Stuff", "Bikes", "Tools"]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
-        radiusKM = defaults.object(forKey: Key.radiusKM) as? Int ?? 10
+        // Snap to the nearest rung. The ladder changed from round kilometres to
+        // round miles, so a value stored under the old one — 20, say — matches
+        // no option and would leave the distance control showing nothing
+        // selected.
+        let storedRadius = defaults.object(forKey: Key.radiusKM) as? Int ?? Self.defaultRadiusKM
+        radiusKM = Self.radiusOptions.contains(storedRadius)
+            ? storedRadius
+            : Self.radiusOptions.min(by: { abs($0 - storedRadius) < abs($1 - storedRadius) })
+                ?? Self.defaultRadiusKM
         hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
         locationName = defaults.string(forKey: Key.locationName)
         locationSlug = defaults.string(forKey: Key.locationSlug)
@@ -59,6 +91,37 @@ final class Preferences: ObservableObject {
             .flatMap(SearchQuery.Sort.init(rawValue:)) ?? .bestMatch
         delivery = defaults.string(forKey: Key.deliveryMethod)
             .flatMap(SearchQuery.Delivery.init(rawValue:)) ?? .localPickup
+        let storedMin = defaults.object(forKey: Key.minPrice) as? Int ?? -1
+        let storedMax = defaults.object(forKey: Key.maxPrice) as? Int ?? -1
+        minPrice = storedMin >= 0 ? storedMin : nil
+        maxPrice = storedMax >= 0 ? storedMax : nil
+        conditions = (defaults.string(forKey: Key.conditions) ?? "")
+            .split(separator: ",")
+            .compactMap { SearchQuery.Condition(rawValue: String($0)) }
+    }
+
+    /// Back to the app's opinionated defaults, not to "no filters at all" —
+    /// local pickup and a 10-mile radius are the product's position on what a
+    /// local marketplace browser should show, so Reset restores them rather
+    /// than clearing them.
+    func resetFilters() {
+        sort = .bestMatch
+        delivery = .localPickup
+        radiusKM = Self.defaultRadiusKM
+        minPrice = nil
+        maxPrice = nil
+        conditions = []
+    }
+
+    /// Whether anything differs from those defaults — drives the dot on the
+    /// Filters button.
+    var hasNonDefaultFilters: Bool {
+        sort != .bestMatch
+            || delivery != .localPickup
+            || radiusKM != Self.defaultRadiusKM
+            || minPrice != nil
+            || maxPrice != nil
+            || !conditions.isEmpty
     }
 
     /// Remembers what to reopen on. Categories are remembered too — browsing

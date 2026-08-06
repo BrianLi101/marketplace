@@ -11,6 +11,7 @@ struct ResultsView: View {
     @State private var searchText = ""
     @State private var selected: Listing?
     @State private var showSettings = false
+    @State private var showFilters = false
 
     @State private var showSignIn = false
     @Namespace private var heroNamespace
@@ -19,13 +20,6 @@ struct ResultsView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    // Always present, including on the saved-items home. With
-                    // no search running these set the defaults the next one
-                    // will use — `rerunCurrentQuery` is a no-op without a
-                    // query — so the bar is where you configure a search as
-                    // well as where you adjust one.
-                    FilterBar { Task { await rerunCurrentQuery() } }
-                    Divider()
                     content
                 }
             }
@@ -43,11 +37,13 @@ struct ResultsView: View {
             .searchSuggestions { SearchSuggestions() }
             .onSubmit(of: .search) { Task { await search(searchText) } }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3") }
-                }
+                ToolbarItem(placement: .topBarLeading) { profileButton }
+                ToolbarItem(placement: .topBarTrailing) { filtersButton }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showFilters) {
+                FilterSheet { Task { await rerunCurrentQuery() } }
+            }
             .sheet(isPresented: $showSignIn) {
                 SignInView {
                     // A signed-in query returns a different result set, not
@@ -81,11 +77,43 @@ struct ResultsView: View {
 
     // MARK: - Pieces
 
-    // §3.1 — the radius used to live in the toolbar, on the thesis that it is
-    // the product's whole point and should never be buried. It still isn't:
-    // it moved into `FilterBar` alongside the filters it belongs with, where
-    // it can also say the thing the toolbar button couldn't — that distance is
-    // applied on this device, because Facebook won't.
+    /// Account and settings. Shows whether a session exists, because that
+    /// changes what the app can see — seller identity, and how far the results
+    /// go — so it is worth being able to tell at a glance.
+    private var profileButton: some View {
+        Button { showSettings = true } label: {
+            Image(systemName: store.session == .authed
+                  ? "person.crop.circle.fill"
+                  : "person.crop.circle")
+        }
+        .accessibilityLabel(store.session == .authed ? "Account, signed in" : "Account")
+    }
+
+    /// §3.1 — the radius was in the toolbar on the thesis that it is the
+    /// product's whole point and should never be buried. It is one tap away
+    /// rather than zero now, but it sits with every other filter instead of
+    /// alone, and the dot says when anything is narrowing the results.
+    ///
+    /// Active state is a tint plus a badge, not `.fill` on the symbol. The
+    /// filled and unfilled variants of this glyph are indistinguishable at
+    /// toolbar size — measured, 1 differing pixel out of 30,301 between the two
+    /// states — so the affordance communicated nothing at all.
+    private var filtersButton: some View {
+        Button { showFilters = true } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+                .foregroundStyle(prefs.hasNonDefaultFilters ? Color.accentColor : Color.primary)
+                .overlay(alignment: .topTrailing) {
+                    if prefs.hasNonDefaultFilters {
+                        Circle()
+                            .fill(Color.accentColor)
+                            .frame(width: 7, height: 7)
+                            .offset(x: 5, y: -4)
+                    }
+                }
+                .padding(.trailing, 3)      // room for the badge to sit in
+        }
+        .accessibilityLabel(prefs.hasNonDefaultFilters ? "Filters, active" : "Filters")
+    }
 
     // Recent searches and suggested categories used to sit in a pill row above
     // the results, where they cost a strip of vertical space on every screen —
@@ -280,7 +308,10 @@ struct ResultsView: View {
             citySlug: prefs.locationSlug ?? "sanfrancisco",
             coordinate: location.coordinate,
             sort: prefs.sort,
-            delivery: prefs.delivery
+            delivery: prefs.delivery,
+            conditions: prefs.conditions,
+            minPrice: prefs.minPrice,
+            maxPrice: prefs.maxPrice
         )
     }
 }
