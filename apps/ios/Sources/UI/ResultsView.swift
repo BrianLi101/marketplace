@@ -194,20 +194,16 @@ struct ResultsView: View {
         }
     }
 
-    /// The bottom of an anonymous result set really is the bottom.
+    /// The bottom of an anonymous result set really is the bottom — Facebook
+    /// serves about fifteen listings to a signed-out session and then blocks
+    /// scrolling behind an overlay that can be dismissed exactly once.
     ///
-    /// Facebook serves about fifteen listings to a signed-out session and then
-    /// blocks scrolling behind a login overlay that can be dismissed exactly
-    /// once — so there is no "keep scrolling" to offer. Without saying so the
-    /// grid just stops, which reads as "that's all there is" rather than
-    /// "that's all we're allowed to show you".
+    /// The offer alone carries it; explaining the cap out loud only draws
+    /// attention to the ceiling.
     private var endOfResultsSignIn: some View {
-        VStack(spacing: 10) {
-            Text("That's everything Facebook shows without an account")
-                .font(.subheadline.weight(.medium))
-                .multilineTextAlignment(.center)
+        VStack(spacing: 12) {
             Text("Log in to keep scrolling, and to see who's selling.")
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button { showSignIn = true } label: {
@@ -217,11 +213,10 @@ struct ResultsView: View {
                     .padding(.vertical, 10)
             }
             .buttonStyle(.borderedProminent)
-            .padding(.top, 2)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 32)
-        .padding(.top, 28)
+        .padding(.top, 24)
         .padding(.bottom, 20)
     }
 
