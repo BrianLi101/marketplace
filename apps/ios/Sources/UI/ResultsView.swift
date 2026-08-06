@@ -32,7 +32,14 @@ struct ResultsView: View {
             .scrollDismissesKeyboard(.immediately)
             .navigationTitle("Marketplace")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "Search local listings")
+            // Pinned under the title rather than left to `.automatic`, which on
+            // iOS 26 floats it at the bottom of the screen. Searching is the
+            // first thing this app does, so the field belongs at the top with
+            // the filters that shape the search, not detached at the other end
+            // of the screen from them.
+            .searchable(text: $searchText,
+                        placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: "Search local listings")
             .searchSuggestions { SearchSuggestions() }
             .onSubmit(of: .search) { Task { await search(searchText) } }
             .toolbar {
