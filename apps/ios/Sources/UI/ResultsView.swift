@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreLocation
 
 struct ResultsView: View {
     @EnvironmentObject private var store: ListingStore
@@ -10,7 +11,7 @@ struct ResultsView: View {
     @State private var searchText = ""
     @State private var selected: Listing?
     @State private var showSettings = false
-    @State private var showRadiusPicker = false
+
     @State private var showSignIn = false
     @Namespace private var heroNamespace
 
@@ -18,6 +19,10 @@ struct ResultsView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    if store.query != nil {
+                        FilterBar { Task { await rerunCurrentQuery() } }
+                        Divider()
+                    }
                     pillRow
                     content
                 }
@@ -28,7 +33,6 @@ struct ResultsView: View {
             .searchable(text: $searchText, prompt: "Search local listings")
             .onSubmit(of: .search) { Task { await search(searchText) } }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { radiusButton }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: { Image(systemName: "slider.horizontal.3") }
                 }
@@ -42,14 +46,6 @@ struct ResultsView: View {
                     Task {
                         store.setSession(await SessionState.isSignedIn() ? .authed : .unauthed)
                         await store.retry()
-                    }
-                }
-            }
-            .confirmationDialog("Search radius", isPresented: $showRadiusPicker, titleVisibility: .visible) {
-                ForEach(Preferences.radiusOptions, id: \.self) { km in
-                    Button("\(SearchQuery.kilometresToMiles(km)) mi") {
-                        prefs.radiusKM = km
-                        Task { await rerunCurrentQuery() }
                     }
                 }
             }
@@ -75,14 +71,11 @@ struct ResultsView: View {
 
     // MARK: - Pieces
 
-    /// §3.1 — the radius is the product's whole thesis, so it's always visible
-    /// and one tap from changing, never buried in settings.
-    private var radiusButton: some View {
-        Button { showRadiusPicker = true } label: {
-            Label("\(SearchQuery.kilometresToMiles(prefs.radiusKM)) mi", systemImage: "location.circle")
-                .font(.subheadline.weight(.medium))
-        }
-    }
+    // §3.1 — the radius used to live in the toolbar, on the thesis that it is
+    // the product's whole point and should never be buried. It still isn't:
+    // it moved into `FilterBar` alongside the filters it belongs with, where
+    // it can also say the thing the toolbar button couldn't — that distance is
+    // applied on this device, because Facebook won't.
 
     /// Recent searches, or suggested categories on first launch so the row is
     /// never a blank strip.
@@ -174,9 +167,30 @@ struct ResultsView: View {
         }
     }
 
+    /// The grid, after the one filter Facebook won't apply for us.
+    ///
+    /// Distance is enforced here because no surface honours `radius` — the chip
+    /// changes and the results don't (`docs/filter-parameters.md` §3). Listings
+    /// whose distance isn't known yet are **kept**, not hidden: geocoding is
+    /// asynchronous, and filtering on missing data would make cards disappear
+    /// and come back as the queue drains.
+    private var visibleListings: [Listing] {
+        guard prefs.radiusKM > 0 else { return store.listings }
+        return store.listings.filter { listing in
+            let coordinate = listing.detail.flatMap { detail -> CLLocationCoordinate2D? in
+                guard let latitude = detail.latitude, let longitude = detail.longitude else { return nil }
+                return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+            }
+            guard let km = distances.distanceKM(for: listing.locationText, coordinate: coordinate)
+            else { return true }
+            return km <= Double(prefs.radiusKM)
+        }
+    }
+
     private var grid: some View {
         VStack(spacing: 0) {
-            StaggeredGrid(items: store.listings, columns: 2, spacing: 12) { listing in
+            let items = visibleListings
+            StaggeredGrid(items: items, columns: 2, spacing: 12) { listing in
                 ListingCard(listing: listing, namespace: heroNamespace)
                     .onTapGesture { selected = listing }
                     .task { await store.loadMoreIfNeeded(currentItem: listing) }
@@ -188,10 +202,36 @@ struct ResultsView: View {
                 }
             }
 
-            if store.session == .unauthed, !store.listings.isEmpty {
+            // Distance is filtered here rather than by Facebook, so listings
+            // disappear with no explanation unless one is given. That matters
+            // most with "Newest first", which genuinely does return results
+            // 60-90 mi out — a search can go from fifteen cards to one, and
+            // without this it just looks broken.
+            let hidden = store.listings.count - items.count
+            if hidden > 0 {
+                distanceNotice(hidden: hidden, showingNothing: items.isEmpty)
+            }
+
+            if store.session == .unauthed, !items.isEmpty {
                 endOfResultsSignIn
             }
         }
+    }
+
+    private func distanceNotice(hidden: Int, showingNothing: Bool) -> some View {
+        VStack(spacing: 8) {
+            Text(showingNothing
+                 ? "Nothing within \(SearchQuery.kilometresToMiles(prefs.radiusKM)) mi"
+                 : "\(hidden) more further than \(SearchQuery.kilometresToMiles(prefs.radiusKM)) mi")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Show any distance") { prefs.radiusKM = 0 }
+                .font(.subheadline.weight(.semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 32)
+        .padding(.vertical, showingNothing ? 40 : 24)
     }
 
     /// The bottom of an anonymous result set really is the bottom — Facebook
@@ -254,9 +294,13 @@ struct ResultsView: View {
         }
         return SearchQuery(
             kind: kind,
-            radiusKM: prefs.radiusKM,
+            // Sent for shape only — no surface filters on it. The real distance
+            // filter is `visibleListings`.
+            radiusKM: prefs.radiusKM == 0 ? 40 : prefs.radiusKM,
             citySlug: prefs.locationSlug ?? "sanfrancisco",
-            coordinate: location.coordinate
+            coordinate: location.coordinate,
+            sort: prefs.sort,
+            delivery: prefs.delivery
         )
     }
 }

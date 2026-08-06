@@ -70,6 +70,27 @@ final class DistanceResolver: ObservableObject {
         return "~\(Int(miles.rounded())) mi"
     }
 
+    /// Kilometres to a listing, preferring its own approximate point over the
+    /// centroid of its city.
+    ///
+    /// Returns nil when the answer isn't known yet — the user has no fix, or
+    /// the place hasn't been geocoded. Callers filtering on distance must treat
+    /// that as "keep", never "hide": geocoding is asynchronous, and hiding on
+    /// missing data makes listings vanish and reappear as the queue drains.
+    func distanceKM(for place: String?, coordinate: CLLocationCoordinate2D? = nil) -> Double? {
+        guard let userLocation else { return nil }
+        let point: CLLocationCoordinate2D?
+        if let coordinate {
+            point = coordinate
+        } else {
+            point = self.coordinate(for: place)
+        }
+        guard let point else { return nil }
+        let metres = CLLocation(latitude: point.latitude, longitude: point.longitude)
+            .distance(from: userLocation)
+        return metres / 1000
+    }
+
     /// Safe to call from a card's `task` on every render — repeats and
     /// already-known places are no-ops. Deliberately does *not* require the
     /// user's location, so places seen before the GPS fix still get resolved.

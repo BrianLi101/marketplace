@@ -15,6 +15,8 @@ final class Preferences: ObservableObject {
         static let locationSlug = "locationSlug"
         static let lastQueryKind = "lastQueryKind"
         static let lastQueryValue = "lastQueryValue"
+        static let sortBy = "sortBy"
+        static let deliveryMethod = "deliveryMethod"
     }
 
     private let defaults: UserDefaults
@@ -31,6 +33,15 @@ final class Preferences: ObservableObject {
     @Published private(set) var lastQueryKind: String? { didSet { defaults.set(lastQueryKind, forKey: Key.lastQueryKind) } }
     @Published private(set) var lastQueryValue: String? { didSet { defaults.set(lastQueryValue, forKey: Key.lastQueryValue) } }
 
+    /// Both are applied server-side by Facebook, so changing either means
+    /// re-running the search rather than re-sorting what's on screen.
+    @Published var sort: SearchQuery.Sort { didSet { defaults.set(sort.rawValue, forKey: Key.sortBy) } }
+    /// Defaults to local pickup: this is a local-browsing app, and shipping
+    /// listings are the main thing that makes a result set stop being local.
+    /// `local_pick_up` returned 15 results with 0 shipping against a default
+    /// page where shipping was mixed in throughout.
+    @Published var delivery: SearchQuery.Delivery { didSet { defaults.set(delivery.rawValue, forKey: Key.deliveryMethod) } }
+
     static let maxRecentSearches = 12
     static let radiusOptions = [2, 5, 10, 20, 40, 65, 100, 250]  // km; Facebook's own ladder
     static let suggestedCategories = ["Furniture", "Electronics", "Free Stuff", "Bikes", "Tools"]
@@ -44,6 +55,10 @@ final class Preferences: ObservableObject {
         locationSlug = defaults.string(forKey: Key.locationSlug)
         lastQueryKind = defaults.string(forKey: Key.lastQueryKind)
         lastQueryValue = defaults.string(forKey: Key.lastQueryValue)
+        sort = defaults.string(forKey: Key.sortBy)
+            .flatMap(SearchQuery.Sort.init(rawValue:)) ?? .bestMatch
+        delivery = defaults.string(forKey: Key.deliveryMethod)
+            .flatMap(SearchQuery.Delivery.init(rawValue:)) ?? .localPickup
     }
 
     /// Remembers what to reopen on. Categories are remembered too — browsing
