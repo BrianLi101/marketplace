@@ -10,9 +10,8 @@ struct ResultsView: View {
     @EnvironmentObject private var viewed: ViewedListings
 
     @State private var searchText = ""
-    /// Whether the search field currently owns the screen. iOS hides the
-    /// toolbar while it does, so this is also the difference between the
-    /// filters button being there and not.
+    /// Whether the search field is presented. Only needed to tell a deliberate
+    /// clear from the field simply closing — see the `searchText` handler.
     @State private var isSearching = false
     /// The term the results currently on screen belong to. Kept separately from
     /// `store.query` because it has to be readable the instant the field is
@@ -57,22 +56,21 @@ struct ResultsView: View {
                         placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Search local listings")
             .searchSuggestions { SearchSuggestions() }
-            // Submitting ends the search session as well as running the search.
-            // Left open, iOS keeps the field in its focused state — no title, no
-            // toolbar, a Cancel button where the filters used to be — so every
-            // search rearranged the top of the screen and left it rearranged
-            // until the user found their way out of it. Results should look
-            // like the app, not like a search field with results under it.
+            .keepToolbarDuringSearch()
+            // The search session is deliberately *not* closed here. A field left
+            // open keeps showing what it was searched for, which is the point:
+            // results with an empty-looking search bar over them don't say what
+            // they are. `keepToolbarDuringSearch` is what makes that affordable
+            // — without it, staying open would cost the title and both toolbar
+            // buttons for as long as the results were on screen.
             //
-            // The term is not lost by this. `searchText` still holds it —
-            // measured "Bookshelf" at dismissal and a second later — and tapping
-            // the field brings it back with the cursor in it, ready to refine.
-            // A dismissed field just draws its prompt rather than its contents.
+            // The only visible difference from the un-searched screen is the
+            // Cancel button beside the field, and dismissing with it keeps both
+            // the results and the term.
             .onSubmit(of: .search) {
                 let term = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !term.isEmpty else { return }
                 activeTerm = term
-                isSearching = false
                 Task { await search(term) }
             }
             .toolbar {
@@ -103,15 +101,16 @@ struct ResultsView: View {
                 distances.setUserLocation(location.coordinate)
             }
             // Emptying the search bar goes home, to the saved list — but Cancel
-            // can empty it too, and cancelling a search field should not throw
-            // away the results behind it. Cancel used to be the only way back to
-            // the toolbar, which left the filters button unreachable from any
-            // screen that had results on it.
+            // empties it too, and cancelling a search field should not throw
+            // away the results behind it.
             //
-            // So the two are told apart on the next tick, once the text and the
+            // The two are told apart on the next tick, once the text and the
             // dismissal have both landed: an empty field with the search UI
             // still up is a deliberate clear, and an empty field because the
-            // field went away restores the term instead.
+            // field went away restores the term instead. That restore is also
+            // what puts the term back on screen — a field that closed without
+            // its binding changing keeps drawing the prompt until something
+            // writes to it.
             .onChange(of: searchText) { _, text in
                 guard text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 Task { @MainActor in
@@ -509,6 +508,22 @@ private struct SearchSuggestions: View {
                 Label(name, systemImage: "square.grid.2x2")
                     .searchCompletion(name)
             }
+        }
+    }
+}
+
+private extension View {
+    /// Stops an active search from emptying the navigation bar.
+    ///
+    /// By default iOS hands the whole bar to the search field while a search is
+    /// in progress, taking the title and both toolbar buttons with it — which
+    /// is why the filters button used to disappear the moment anyone searched.
+    @ViewBuilder
+    func keepToolbarDuringSearch() -> some View {
+        if #available(iOS 17.1, *) {
+            searchPresentationToolbarBehavior(.avoidHidingContent)
+        } else {
+            self
         }
     }
 }
