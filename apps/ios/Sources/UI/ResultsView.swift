@@ -19,10 +19,13 @@ struct ResultsView: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    if store.query != nil {
-                        FilterBar { Task { await rerunCurrentQuery() } }
-                        Divider()
-                    }
+                    // Always present, including on the saved-items home. With
+                    // no search running these set the defaults the next one
+                    // will use — `rerunCurrentQuery` is a no-op without a
+                    // query — so the bar is where you configure a search as
+                    // well as where you adjust one.
+                    FilterBar { Task { await rerunCurrentQuery() } }
+                    Divider()
                     content
                 }
             }
