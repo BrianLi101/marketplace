@@ -43,10 +43,10 @@ Legend: **yes** · **no** · **~** partial or conditional · **?** not yet verif
 | **Pagination past first batch** | **yes** (26→50→74→99) | **yes** | n/a | **no** (~16 cap) | **no** (~24 cap) | n/a |
 | **Embedded GraphQL payload** | **no** | **no** | **no** | **yes** (per card) | ? | **yes** |
 | Exact posting timestamp | no | no | **no** | **yes** (`creation_time`) | ? | **yes** |
-| Location settable by URL | **yes** (city slug or place id) | ~ entry point only | n/a | yes | yes | n/a |
+| Location settable by URL | **yes** (place id; slug only if it exists) | ~ entry point only | n/a | **yes** (same) | yes | n/a |
 | `radius` URL parameter honoured | **no** (stripped) | **no** (stripped) | n/a | **no** (chip only) | ? | n/a |
 | Sort / filter parameters honoured | **no** (all stripped) | **no** | n/a | **yes** (all but `radius`) | ? | n/a |
-| `latitude`/`longitude` honoured | **no** (ignored, falls back to IP) | no | n/a | ? | ? | n/a |
+| `latitude`/`longitude` honoured | **no** (ignored, falls back to IP) | no | n/a | **no** (same) | ? | n/a |
 | Shipping listings mixed in | yes | yes | — | yes, and filterable | yes | — |
 
 Measured from a `WKWebView` on an iPhone 17 Pro simulator, logged out, between
@@ -195,11 +195,25 @@ item — several of these are harder or easier than they look.
 
 **Location and radius**
 
-- [ ] **Make location actually work.** Only the city slug or place id in the URL
-      path moves the result set — `latitude`/`longitude` are ignored in favour of
-      the IP-inferred place, and `radius` is decorative on *both* surfaces
-      (measured 2026-08-04, `docs/filter-parameters.md` §3). Changing city is
-      solved; changing distance is not, and can't be.
+- [ ] **Resolve the user's own location to a place id.** Changing city is *not*
+      solved, which is what the picker's curated list was hiding: five of its
+      twelve slugs were not places Facebook recognises, and a rejected slug
+      silently serves the IP-inferred city instead of failing
+      (`docs/location-targeting.md`, measured 2026-08-06). Numeric place ids
+      always work, and every search payload already carries one per card at
+      `location.reverse_geocode.city_page.id` — so the app can harvest ids as it
+      browses and never guess a slug. Steps and fallbacks in §7 of that doc.
+- [ ] **Validate the place on every search.** An unrecognised place rewrites the
+      path to `/marketplace/category/search/`, and an ambiguous slug resolves
+      somewhere else entirely (`richmond` → Richmond, *Virginia*). Both return a
+      full, healthy-looking result set for the wrong city, so the path segment
+      and the dominant returned city both have to be checked.
+- [ ] ~~Send the user's coordinate.~~ **Closed.** `latitude`/`longitude` are
+      ignored on desktop exactly as on mobile — measured with a San Diego pair
+      against a San Francisco IP, which returned San Francisco ×15. Facebook
+      also never calls `navigator.geolocation` on either surface (0 calls, with
+      the recorder proved live), so there is no route by which the site can read
+      a real fix. The coordinate is ours alone, for distance filtering.
 - [ ] **Enforce radius client-side** — it's the only option left. Cards carry a
       city but no coordinate, so this is either geocoded city centroids at card
       level (cheap, coarse) or the listing's own coordinate once enriched
@@ -343,4 +357,5 @@ item — several of these are harder or easier than they look.
 | `docs/filter-parameters.md` | Every sort/filter parameter, which surface honours it, and what's measured |
 | `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isnt worth calling |
 | `docs/logged-in-findings.md` | What a signed-in session changes: seller identity yes, structured depth no |
+| `docs/location-targeting.md` | Why slugs can't target a user's location and place ids can, and where the ids come from |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |

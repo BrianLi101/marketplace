@@ -30,6 +30,10 @@ struct ContentView: View {
                     .disabled(!controller.looksSignedIn)
                 Button("Rated") { controller.startRatedRouteTest() }
                     .disabled(!controller.looksSignedIn)
+                // Ungated: how location is resolved is worth knowing in both
+                // states, and a signed-in account may carry its own saved city.
+                Button("Location") { controller.startLocationTests() }
+                Button("Slugs") { controller.startSlugSurvey() }
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -98,6 +102,16 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: false)
         )
+        // Does Facebook ever *ask* the browser where it is? If it does, the
+        // app can answer with the user's real fix and get exact targeting for
+        // free. Same reasoning as the two above: hook before any page script
+        // exists, or "never called" is indistinguishable from "called before
+        // we were watching".
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.geoRecorderJS,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
         webView = WKWebView(frame: .zero, configuration: config)
         super.init()
         webView.navigationDelegate = self
@@ -163,6 +177,135 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
 
     func startRouteComparison() {
         Task { await runRouteComparison() }
+    }
+
+    func startLocationTests() {
+        Task { await runLocationTests() }
+    }
+
+    func startSlugSurvey() {
+        Task { await runSlugSurvey() }
+    }
+
+    /// Two follow-ups to `runLocationTests`, which established that a *valid*
+    /// slug relocates the results and an invalid one silently rewrites to
+    /// `/marketplace/category/search/` and serves the IP-inferred city.
+    ///
+    ///  1. **How often does naive slugification miss?** `sandiego` worked and
+    ///     `santarosa` and `walnutcreek` did not, which suggests aliases exist
+    ///     for metros and not for everywhere else. If the miss rate is high,
+    ///     "lowercase the city and strip spaces" cannot be the only mechanism.
+    ///  2. **Is a place id harvested from a page's own payload usable as a path
+    ///     segment?** Every card carries its city's `city_page.id`, so if a
+    ///     harvested id works, the app can learn ids for the places its users
+    ///     actually see, and never has to guess a slug for them.
+    func runSlugSurvey() async {
+        webView.customUserAgent = Self.desktopUA
+        let query = "?query=desk"
+
+        // Exactly the list the app ships in `MarketplaceCity.common`. The
+        // general survey found `berkeley` rejected, which would mean the
+        // shipped picker has entries that silently return the wrong city.
+        let slugs = ["sanfrancisco", "oakland", "berkeley", "sanjose", "dalycity",
+                     "paloalto", "fremont", "marin", "la", "nyc", "seattle", "chicago"]
+
+        for slug in slugs {
+            await load("https://www.facebook.com/marketplace/\(slug)/search/\(query)")
+            try? await Task.sleep(for: .seconds(8))
+            emit("SLUG[\(slug)] \(await js(Self.slugVerdictJS))")
+        }
+
+        // Harvest ids from a page whose results span several cities, then try
+        // the one place we have never addressed by slug.
+        await load("https://www.facebook.com/marketplace/107929532567815/search/\(query)")
+        try? await Task.sleep(for: .seconds(9))
+        let pairs = await js(Self.placeIDHarvestJS)
+        emit("HARVEST \(pairs)")
+
+        if let id = firstHarvestedID(pairs, excluding: "San Francisco") {
+            await load("https://www.facebook.com/marketplace/\(id.1)/search/\(query)")
+            try? await Task.sleep(for: .seconds(9))
+            emit("HARVESTED_ID[\(id.0) = \(id.1)] \(await js(Self.slugVerdictJS))")
+        } else {
+            emit("HARVESTED_ID none usable")
+        }
+
+        emit("=== SLUGPROBE COMPLETE ===")
+    }
+
+    /// First `city -> place id` pair that isn't the city we searched from, so
+    /// the follow-up load is a real relocation rather than a no-op.
+    func firstHarvestedID(_ json: String, excluding: String) -> (String, String)? {
+        guard let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+        else { return nil }
+        return obj.sorted { $0.key < $1.key }.first { !$0.key.hasPrefix(excluding) }
+            .map { ($0.key, $0.value) }
+    }
+
+    /// Can the app point Facebook at wherever the user actually is?
+    ///
+    /// What is already settled, both on **mobile** (`mobile-location-radius-notes.md`
+    /// §7): city slugs relocate the result set, place ids work, and
+    /// `latitude`/`longitude` are discarded in favour of the IP-inferred place.
+    /// None of it was measured on **desktop**, which is now the app's primary
+    /// search surface, and three questions matter for dropping the curated city
+    /// list:
+    ///
+    ///  1. Does desktop honour `latitude`/`longitude`? If it does, a coordinate
+    ///     goes straight into the URL and there is nothing else to build.
+    ///  2. Does an *arbitrary* slug work — one nobody has hand-checked — and
+    ///     what does a wrong slug do? A silent fall back to the IP-inferred
+    ///     place is the dangerous answer: results that look fine and are for
+    ///     the wrong city.
+    ///  3. Does the page ask for `navigator.geolocation`? That would be live
+    ///     location in the truest sense.
+    ///
+    /// Every case reports the **cities of the returned cards**, not the header.
+    /// Radius was recorded as working for weeks on the strength of a chip that
+    /// updated while the listings didn't (`filter-parameters.md` §3).
+    func runLocationTests() async {
+        let query = "?query=desk"
+        func desktop(_ path: String, _ extra: String = "") -> String {
+            "https://www.facebook.com/marketplace/\(path)search/\(query)\(extra)"
+        }
+
+        // San Diego is the target throughout: ~500 mi from the simulator's
+        // IP-inferred San Francisco, so "did it move" needs no judgement call.
+        let sanDiego = "&latitude=32.7157&longitude=-117.1611"
+
+        let cases: [(String, String)] = [
+            ("d_slug_sf",         desktop("sanfrancisco/")),
+            ("d_slug_sanjose",    desktop("sanjose/")),            // positive control: cities must move
+            ("d_no_place",        desktop("")),                    // IP baseline
+            ("d_latlong_only",    desktop("", sanDiego)),          // Q1
+            ("d_latlong_vs_slug", desktop("sanfrancisco/", sanDiego)),
+            ("d_slug_sandiego",   desktop("sandiego/")),           // Q2 — arbitrary slug
+            ("d_slug_santarosa",  desktop("santarosa/")),
+            ("d_slug_walnutcreek", desktop("walnutcreek/")),       // two words, no vanity alias?
+            ("d_slug_garbage",    desktop("notarealplacexyz/")),   // Q2 — the failure mode
+            ("d_placeid_ssf",     desktop("107929532567815/"))     // known-good place id
+        ]
+
+        webView.customUserAgent = Self.desktopUA
+        for (name, url) in cases {
+            await load(url)
+            try? await Task.sleep(for: .seconds(9))
+            emit("LOC[\(name)] \(await js(Self.locationProbeJS))")
+        }
+
+        // Q3, and the control that says the geolocation hook works at all. A
+        // page that never asked is indistinguishable from a hook that never
+        // installed until the harness calls the API on itself and sees it.
+        emit("LOC[geo_control_desktop] \(await js(Self.geoControlJS))")
+
+        webView.customUserAgent = Self.mobileUA
+        await load("https://www.facebook.com/marketplace/sanfrancisco/search/\(query)")
+        try? await Task.sleep(for: .seconds(9))
+        emit("LOC[m_slug_sf] \(await js(Self.locationProbeJS))")
+        emit("LOC[geo_control_mobile] \(await js(Self.geoControlJS))")
+
+        emit("=== LOCPROBE COMPLETE ===")
     }
 
     /// Does reaching an item page by clicking a card give the same data as
@@ -3105,6 +3248,147 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         loginWall: body.indexOf('You must log in') !== -1,
         title: document.title.slice(0, 50)
       });
+    })()
+    """
+
+    /// Records every request the page makes for the device's position.
+    static let geoRecorderJS = """
+    (function(){
+      if (window.__geoHooked) return;
+      window.__geoHooked = true;
+      window.__geoCalls = [];
+      try {
+        var g = navigator.geolocation;
+        if (!g) { window.__geoCalls.push({ kind: 'unavailable' }); return; }
+        var get = g.getCurrentPosition.bind(g);
+        g.getCurrentPosition = function(ok, err, opts) {
+          window.__geoCalls.push({ kind: 'get', opts: JSON.stringify(opts || {}) });
+          return get(ok, err, opts);
+        };
+        var watch = g.watchPosition.bind(g);
+        g.watchPosition = function(ok, err, opts) {
+          window.__geoCalls.push({ kind: 'watch', opts: JSON.stringify(opts || {}) });
+          return watch(ok, err, opts);
+        };
+      } catch (e) {
+        window.__geoCalls.push({ kind: 'hook-failed', error: String(e) });
+      }
+    })();
+    """
+
+    /// Proves the hook above can see a call, by making one. Without this, "the
+    /// page never asked" and "the recorder never installed" look identical.
+    static let geoControlJS = """
+    (function(){
+      var before = (window.__geoCalls || []).length;
+      try {
+        navigator.geolocation.getCurrentPosition(function(){}, function(){});
+      } catch (e) {
+        return JSON.stringify({ hooked: !!window.__geoHooked, error: String(e) });
+      }
+      var after = (window.__geoCalls || []).length;
+      return JSON.stringify({
+        hooked: !!window.__geoHooked,
+        pageCalls: before,
+        sawOwnCall: after > before,
+        calls: (window.__geoCalls || []).slice(0, 4)
+      });
+    })()
+    """
+
+    /// Where did the *listings* come from — not where does the header claim.
+    ///
+    /// Cities are read off card aria-labels, whose last three comma segments
+    /// are `<city>, <ST>, listing <id>`. Echoes a whole sample label so a
+    /// mis-parse is visible rather than silent (checklist §2), and reports
+    /// `location.href` after load so a normalised or redirected URL can't be
+    /// mistaken for the one that was requested (§5).
+    static let locationProbeJS = """
+    (function(){
+      var html = document.documentElement.outerHTML;
+      var labels = [];
+      var anchors = document.querySelectorAll('a[href*="/marketplace/item/"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var l = anchors[i].getAttribute('aria-label');
+        if (l) labels.push(l);
+      }
+      // Mobile has no item anchors — its cards label themselves instead.
+      if (labels.length === 0) {
+        var labelled = document.querySelectorAll('[aria-label*=" in "]');
+        for (var j = 0; j < labelled.length; j++) labels.push(labelled[j].getAttribute('aria-label'));
+      }
+      var counts = {};
+      labels.forEach(function(s){
+        var parts = s.split(', ');
+        var city = null;
+        if (parts.length >= 3 && /^[A-Z]{2}$/.test(parts[parts.length - 2])) {
+          city = parts[parts.length - 3] + ', ' + parts[parts.length - 2];
+        } else {
+          var m = s.match(/ in ([^,]+, [A-Z]{2})/);
+          if (m) city = m[1];
+        }
+        if (city) counts[city] = (counts[city] || 0) + 1;
+      });
+      var ids = [], seen = {};
+      var echoes = html.match(/marketplace\\/(\\d{8,})\\//g) || [];
+      echoes.forEach(function(e){ if (!seen[e]) { seen[e] = 1; ids.push(e); } });
+      var rg = [], re = /"reverse_geocode":\\{[^}]*\\}[^}]*\\}/g, m2;
+      while ((m2 = re.exec(html)) !== null && rg.length < 2) rg.push(m2[0].slice(0, 220));
+      var near = (document.body.innerText.match(/[^\\n]*\\bnear\\b[^\\n]*/) || [''])[0];
+      return JSON.stringify({
+        href: location.href.slice(0, 150),
+        cards: labels.length,
+        cities: counts,
+        sample: labels[0] ? labels[0].slice(0, 100) : null,
+        near: near.slice(0, 110),
+        idEchoes: ids.slice(0, 4),
+        reverseGeocode: rg,
+        pageGeoCalls: (window.__geoCalls || []).length,
+        loginWall: html.indexOf('You must log in') !== -1,
+        title: document.title.slice(0, 60)
+      });
+    })()
+    """
+
+    /// Did the place in the path survive, and where did the listings come from?
+    ///
+    /// `accepted` is the whole test: Facebook rewrites an unrecognised place to
+    /// `/marketplace/category/search/` rather than erroring, so the pathname is
+    /// the only thing that separates "your city" from "the city your IP is in".
+    static let slugVerdictJS = """
+    (function(){
+      var labels = [], anchors = document.querySelectorAll('a[href*="/marketplace/item/"]');
+      for (var i = 0; i < anchors.length; i++) {
+        var l = anchors[i].getAttribute('aria-label');
+        if (l) labels.push(l);
+      }
+      var counts = {};
+      labels.forEach(function(s){
+        var p = s.split(', ');
+        if (p.length >= 3 && /^[A-Z]{2}$/.test(p[p.length - 2])) {
+          var c = p[p.length - 3] + ', ' + p[p.length - 2];
+          counts[c] = (counts[c] || 0) + 1;
+        }
+      });
+      var top = Object.keys(counts).sort(function(a, b){ return counts[b] - counts[a]; });
+      return JSON.stringify({
+        accepted: location.pathname.indexOf('/category/') === -1,
+        path: location.pathname,
+        cards: labels.length,
+        top: top.slice(0, 3).map(function(c){ return c + ' x' + counts[c]; })
+      });
+    })()
+    """
+
+    /// Every card names its city *and* that city's Facebook place id, so one
+    /// search yields addressable ids for everywhere it returned.
+    static let placeIDHarvestJS = """
+    (function(){
+      var html = document.documentElement.outerHTML;
+      var re = /"reverse_geocode":\\{"city":"([^"]+)","state":"([^"]+)","city_page":\\{"display_name":"[^"]*","id":"(\\d+)"\\}\\}/g;
+      var out = {}, m;
+      while ((m = re.exec(html)) !== null) out[m[1] + ', ' + m[2]] = m[3];
+      return JSON.stringify(out);
     })()
     """
 

@@ -12,18 +12,25 @@ struct MarketplaceCity: Identifiable, Hashable {
     let slug: String
     var id: String { slug }
 
-    /// Slugs verified to relocate the result set rather than merely the header.
-    /// Cities without a vanity slug need a numeric place id, which is why this
-    /// is a curated list rather than a free-text field.
+    /// **Five of the twelve entries here were wrong** — `berkeley`, `dalycity`,
+    /// `paloalto`, `fremont` and `marin` are not places Facebook recognises. It
+    /// does not say so: it rewrites the path to `/marketplace/category/search/`
+    /// and serves the IP-inferred city, so picking Berkeley returned San
+    /// Francisco listings with nothing on screen admitting it
+    /// (`docs/location-targeting.md` §1, measured 2026-08-06).
+    ///
+    /// The comment they shipped under claimed the slugs were "verified to
+    /// relocate the result set" — true of the three anyone checked, assumed of
+    /// the rest. Only the seven measured to work are listed now.
+    ///
+    /// This whole list is a stopgap. Slugs are a guess at a name in a global
+    /// namespace — `richmond` resolves to Richmond *Virginia* — so the real fix
+    /// is resolving the user's own location to a numeric place id, which every
+    /// search payload already carries (§6, §7).
     static let common: [MarketplaceCity] = [
         MarketplaceCity(name: "San Francisco", slug: "sanfrancisco"),
         MarketplaceCity(name: "Oakland", slug: "oakland"),
-        MarketplaceCity(name: "Berkeley", slug: "berkeley"),
         MarketplaceCity(name: "San Jose", slug: "sanjose"),
-        MarketplaceCity(name: "Daly City", slug: "dalycity"),
-        MarketplaceCity(name: "Palo Alto", slug: "paloalto"),
-        MarketplaceCity(name: "Fremont", slug: "fremont"),
-        MarketplaceCity(name: "Marin", slug: "marin"),
         MarketplaceCity(name: "Los Angeles", slug: "la"),
         MarketplaceCity(name: "New York", slug: "nyc"),
         MarketplaceCity(name: "Seattle", slug: "seattle"),

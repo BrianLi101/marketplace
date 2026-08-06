@@ -160,6 +160,14 @@ Three things follow:
    result set, not merely the page header. Since the app already geocodes the
    user's city via CoreLocation, slugifying that name and putting it in the
    path needs no picker, no id lookup and no session state.
+
+   > **Wrong — corrected 2026-08-06.** Generalised from two slugs that happened
+   > to work. Measured across 25, roughly half are not places Facebook
+   > recognises — `berkeley`, `dalycity`, `paloalto`, `fremont` and
+   > `sacramento` among them — and a rejected slug silently serves the
+   > IP-inferred city rather than failing. Slugifying a city name is a guess;
+   > the place id in the search payload is the mechanism. See
+   > `location-targeting.md`.
 2. **Latitude/longitude is dead for targeting.** Facebook discards it and falls
    back to IP. The user's coordinate is still needed locally to compute
    distances — it just can't tell Facebook where to look.
