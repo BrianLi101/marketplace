@@ -23,7 +23,6 @@ struct ResultsView: View {
                         FilterBar { Task { await rerunCurrentQuery() } }
                         Divider()
                     }
-                    pillRow
                     content
                 }
             }
@@ -31,6 +30,7 @@ struct ResultsView: View {
             .navigationTitle("Marketplace")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search local listings")
+            .searchSuggestions { SearchSuggestions() }
             .onSubmit(of: .search) { Task { await search(searchText) } }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -77,46 +77,10 @@ struct ResultsView: View {
     // it can also say the thing the toolbar button couldn't — that distance is
     // applied on this device, because Facebook won't.
 
-    /// Recent searches, or suggested categories on first launch so the row is
-    /// never a blank strip.
-    private var pillRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                if prefs.recentSearches.isEmpty {
-                    ForEach(Preferences.suggestedCategories, id: \.self) { name in
-                        pill(name, systemImage: "square.grid.2x2") {
-                            Task { await browse(category: name) }
-                        }
-                    }
-                } else {
-                    ForEach(prefs.recentSearches, id: \.self) { term in
-                        pill(term, systemImage: "clock.arrow.circlepath") {
-                            searchText = term
-                            Task { await search(term) }
-                        }
-                        .contextMenu {
-                            Button(role: .destructive) { prefs.removeSearch(term) } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal)
-            .padding(.vertical, 10)
-        }
-    }
-
-    private func pill(_ text: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(text, systemImage: systemImage)
-                .font(.subheadline)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Color(.secondarySystemBackground), in: Capsule())
-        }
-        .buttonStyle(.plain)
-    }
+    // Recent searches and suggested categories used to sit in a pill row above
+    // the results, where they cost a strip of vertical space on every screen —
+    // including the ones where nobody is looking for them. They now appear
+    // inside the search field, which is where someone is when they want them.
 
     @ViewBuilder
     private var content: some View {
@@ -270,6 +234,12 @@ struct ResultsView: View {
         await store.run(makeQuery(.search(trimmed)))
     }
 
+    /// Currently unreachable: the category pills that called it are gone, and
+    /// the suggestions run categories as ordinary searches. Kept because
+    /// `SearchQuery.Kind.category` still builds a valid URL — but note that
+    /// category *paths* have never been through the desktop payload extractor,
+    /// which is verified only against `/search/`. Anything reviving this should
+    /// check the payload parses there first.
     private func browse(category: String) async {
         prefs.recordLastQuery(.category(category))
         await store.run(makeQuery(.category(category)))
@@ -302,6 +272,39 @@ struct ResultsView: View {
             sort: prefs.sort,
             delivery: prefs.delivery
         )
+    }
+}
+
+/// What the search field offers while it has focus: what you looked for
+/// before, or somewhere to start if you never have.
+///
+/// Uses `.searchCompletion` rather than buttons. A button has to call
+/// `dismissSearch()`, which *clears the field* — so the term the user just
+/// picked vanished from the search bar, and the empty value tripped the
+/// "emptied the field, go home" handler on its way past. A completion puts the
+/// term in the field and submits it, which is the behaviour wanted here.
+///
+/// Categories run as searches for the same reason anything else does: the
+/// desktop payload is only verified on `/search/` paths, and a category path
+/// is a different page shape that has never been through this extractor.
+private struct SearchSuggestions: View {
+    @EnvironmentObject private var prefs: Preferences
+
+    var body: some View {
+        if !prefs.recentSearches.isEmpty {
+            Section("Recent") {
+                ForEach(prefs.recentSearches, id: \.self) { term in
+                    Label(term, systemImage: "clock.arrow.circlepath")
+                        .searchCompletion(term)
+                }
+            }
+        }
+        Section(prefs.recentSearches.isEmpty ? "Try" : "Categories") {
+            ForEach(Preferences.suggestedCategories, id: \.self) { name in
+                Label(name, systemImage: "square.grid.2x2")
+                    .searchCompletion(name)
+            }
+        }
     }
 }
 
