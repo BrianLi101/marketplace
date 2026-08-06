@@ -261,11 +261,48 @@ item — several of these are harder or easier than they look.
       socket work and roughly a one-line change plus a look at what the detail
       view does with more.
 
+**Embeddings**
+
+- [ ] **Vectorise listing titles, and descriptions where we have them.** Four
+      things want it, in rough order of value: semantic search ("mid-century
+      wooden desk, no particleboard" against a keyword-only backend);
+      **repost detection**, below; "more like this" off a saved or opened
+      listing; and clustering near-identical titles from one seller, which is a
+      better version of the "repeated titles" business signal already noted
+      under Feed quality.
+- [ ] **Reposts are the case that actually needs it.** Identity is the photo
+      FBID from the thumbnail URL (`Listing.identity`), so a seller who relists
+      the same item with a re-uploaded photo produces a listing the app has
+      never seen before. Everything keyed on that id inherits the blind spot —
+      dedupe, saves, and the "Only new listings" filter, which will happily
+      show you the same sofa every week as long as the photo keeps changing
+      (`docs/filter-parameters.md` §8). Title similarity plus a matching price
+      and city is the obvious detector.
+- [ ] **Mind the data asymmetry.** Titles are available for *every* card and
+      untruncated — from the desktop payload for the first ~15 and from the
+      card aria-label for the rest. Descriptions exist only on item pages, so a
+      description-based index covers only listings the user has already opened:
+      sparse, and biased toward what they were already interested in. Titles are
+      short enough to be noisy, which is the real risk here; a title-only index
+      needs a similarity threshold set against measured pairs, not a guessed one.
+- [ ] On-device first. Apple's Natural Language framework ships sentence
+      embeddings (`NLEmbedding.sentenceEmbedding(for:)`, and
+      `NLContextualEmbedding` on iOS 17+) — **unverified in this repo**, neither
+      the API nor its quality on short listing titles has been measured. Local
+      keeps it consistent with the two standing constraints: no extra traffic
+      against Facebook, and nothing about what the user browsed leaves the
+      device (`ViewedListings`). Vectors belong beside the profiles in
+      `ListingCache` — 1,000 profiles × 512 floats is ~2 MB — and in
+      `docs/data-model.md` if this ever moves server-side.
+
 **Agent shopping**
 
 - [ ] **Describe what you want, get a set of options.** Tell it "a desk under
       $100 within 5 miles, no particleboard" and have it run the searches, open
       the candidates, and come back with a shortlist and reasons.
+- [ ] Ranking the candidates is the Embeddings item above: the constraint
+      "no particleboard" has to be matched against listing text, and Facebook's
+      own search won't do it.
 - [ ] Needs the enrichment path to be cheap enough to open many listings —
       currently ~2s each and every open is traffic against Facebook, so this
       wants the backend and the shared cache before it's practical at scale.
