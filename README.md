@@ -285,6 +285,21 @@ item — several of these are harder or easier than they look. Items marked
       the precision it just spent ~10 s obtaining. Worth deciding rather than
       just doing: it would tie the coordinate to the signed-in session, where
       today the resolution is anonymous.
+- [ ] **Name the neighbourhood, where it's honest to.** "Inner Sunset, San
+      Francisco" is far more useful than "San Francisco", and Apple supplies it
+      — `CLPlacemark.subLocality` came back populated for six of six cached
+      listings, with names a local would use. The blocker is our input, not
+      Apple: geocoding the four corners of one lattice cell returned **four
+      different neighbourhoods** for one cell and three for another, so the
+      centre's name is a guess dressed as a fact.
+      The check that makes it safe is cheap — geocode the cell's corners and
+      show a name only when they agree, cached by cell since listings share
+      them. It declines exactly where it should: almost always in San
+      Francisco, usually passing in suburbs where neighbourhoods are larger
+      than the ~600 × 950 m cell. (`docs/location.md` §8.)
+      Related: `CLGeocoder` is deprecated as of iOS 26 in favour of MapKit's
+      reverse-geocoding request, and `DistanceResolver` and `LocationProvider`
+      both still use it.
 - [ ] **The drawn radius still needs work.** It is currently the half-diagonal
       of the measured lattice cell (~572 m in SF), which circumscribes the real
       uncertainty and so never understates — but the cell is only a *lower*
