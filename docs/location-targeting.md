@@ -93,10 +93,11 @@ the place from IP and ignores what it was told — the same behaviour recorded o
 mobile in `mobile-location-radius-notes.md` §7, now confirmed on the surface the
 app actually searches.
 
-**A coordinate cannot be sent to Facebook.** It is only ever useful locally, for
-measuring distance to listings the app already has.
+**A coordinate cannot be sent to Facebook *as a URL parameter*.** It can be
+supplied another way — see §5a, which supersedes the conclusion §5 originally
+drew.
 
-## 5. The page never asks the browser where it is
+## 5. The page never asks the browser where it is *unprompted*
 
 `navigator.geolocation.getCurrentPosition` and `watchPosition` were wrapped at
 `atDocumentStart`, before any page script existed, on both surfaces:
@@ -111,8 +112,45 @@ With the instrument proved live in the same breath — the harness called
 `sawOwnCall: true`) on both. So this is Facebook not asking, not a hook that
 failed to install (checklist §1, §6a).
 
-Granting geolocation to the webview would therefore achieve nothing. There is
-no "let the site read the real GPS fix" route.
+So Facebook does not reach for the browser's location on its own, during load
+or during a search.
+
+## 5a. But there is a button that asks — and it takes any coordinate
+
+**Corrects §5, measured 2026-08-06.** The reading above was "granting
+geolocation to the webview would achieve nothing, there is no route by which
+the site can read a real fix". That was too strong: §5 measured page *load* and
+*search*, and never opened the location picker. The picker has a control that
+asks.
+
+In the "Change location" dialog, at the top-right of the map, sits
+`div[role="button"][aria-label="Marketplace geolocation picker"]` — the
+centring arrow. Present **logged out as well as logged in**.
+
+| step | result |
+|---|---|
+| hook `getCurrentPosition`, never delegate, click the arrow | **1 call**, synchronous on click |
+| leave it unresolved | the arrow becomes a spinner and stays there — it genuinely waits |
+| resolve with a synthetic Toronto fix (43.6532, -79.3832) from a San Francisco IP | Location field becomes **"Toronto, Ontario"** |
+| press Apply | URL → `/marketplace/toronto/?radius_in_km=65`, pill → "Toronto · 40 mi", cards → Toronto, Brampton, Vaughan, Markham, Mississauga, Ajax, Guelph, prices in CA$ |
+
+Recorder proved live by positive control in the same breath, both times
+(checklist §1, §6a).
+
+**So an arbitrary lat/long *is* an accepted input** — just through this control
+rather than the URL. Note what Facebook does with it: the coordinate is
+consumed, reverse-geocoded, and thrown away. What persists is a place — the
+slug `toronto` in the path — so this is a *resolver*, not a coordinate mode.
+
+That is the useful part. It resolves any coordinate to a place Facebook itself
+chose, so the slug is valid by construction and none of §2's broken-slug
+problem arises. Two open questions become one mechanism: feed the device's real
+fix to browse where the user actually is, or geocode a typed city name to a
+coordinate and feed that to browse anywhere else.
+
+Unverified so far: whether this behaves the same inside the app's `WKWebView`
+(measured in the desktop-UA browser pane), and whether `radius_in_km` from this
+route is honoured or decorative like every other radius control (§3).
 
 ## 6. Place ids work, and every search hands them over
 

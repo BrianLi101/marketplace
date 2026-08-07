@@ -281,12 +281,26 @@ item — several of these are harder or easier than they look. Items marked
       somewhere else entirely (`richmond` → Richmond, *Virginia*). Both return a
       full, healthy-looking result set for the wrong city, so the path segment
       and the dominant returned city both have to be checked.
-- [ ] ~~Send the user's coordinate.~~ **Closed.** `latitude`/`longitude` are
-      ignored on desktop exactly as on mobile — measured with a San Diego pair
-      against a San Francisco IP, which returned San Francisco ×15. Facebook
-      also never calls `navigator.geolocation` on either surface (0 calls, with
-      the recorder proved live), so there is no route by which the site can read
-      a real fix. The coordinate is ours alone, for distance filtering.
+- [ ] **Feed a coordinate to the picker's centring arrow — this is probably the
+      answer to both location problems.** `latitude`/`longitude` as *URL
+      parameters* are ignored (San Diego pair against a San Francisco IP →
+      San Francisco ×15), and Facebook never reaches for the browser's location
+      on its own during load or search. But the "Change location" dialog has a
+      control that does ask —
+      `div[role="button"][aria-label="Marketplace geolocation picker"]`, present
+      logged out too. Clicking it calls `getCurrentPosition` once, synchronously,
+      and *waits*. Resolved with a synthetic Toronto fix from a San Francisco IP
+      it set the field to "Toronto, Ontario", and Apply gave
+      `/marketplace/toronto/?radius_in_km=65` with an all-Ontario result set in
+      CA$ (`docs/location-targeting.md` §5a, measured 2026-08-06 — this corrects
+      §5, which had concluded no such route existed).
+      The coordinate is consumed and discarded; what persists is a **place**. So
+      it's a resolver: hook `getCurrentPosition` in our own webview, feed the
+      device's real fix to browse where the user is, or geocode a typed city to
+      a coordinate and feed that to browse anywhere else. Facebook picks the
+      slug, so it's valid by construction and the broken-slug problem above
+      disappears. Unverified: that it behaves the same in `WKWebView`, and
+      whether `radius_in_km` from this route is real or decorative.
 - [ ] **Enforce radius client-side** — it's the only option left. Cards carry a
       city but no coordinate, so this is either geocoded city centroids at card
       level (cheap, coarse) or the listing's own coordinate once enriched
