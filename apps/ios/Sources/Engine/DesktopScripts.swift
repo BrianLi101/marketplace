@@ -215,6 +215,62 @@ enum DesktopScripts {
     })()
     """
 
+    /// The desktop search page's **location pill**, the one under the filter
+    /// row reading "San Francisco, California · Within 5 mi".
+    ///
+    /// Returns the strings only — `DesktopLocationPill` does the parsing in
+    /// Swift, where it is readable and testable, as with every other extractor
+    /// here.
+    ///
+    /// Two selectors, in order of how much they can be trusted. The
+    /// `aria-label` is the real target: it is written for a screen reader, so
+    /// it spells out `Location:` and `Within 5 mi` in full even when the visible
+    /// pill has been abbreviated to fit. Rendered text is the fallback, for a
+    /// layout or a locale where that label is absent.
+    ///
+    /// `candidates` is reported for the same reason the card probes report
+    /// their sample: a pill parsed from the wrong element produces a perfectly
+    /// plausible place name, and the count is what makes that visible
+    /// (`docs/probe-checklist.md` §2).
+    static let extractLocationPill = """
+    (function(){
+      function clean(s) { return (s || '').replace(/\\s+/g, ' ').trim(); }
+
+      var labelled = document.querySelectorAll('[aria-label]');
+      var candidates = [];
+      var best = null, source = null;
+
+      for (var i = 0; i < labelled.length; i++) {
+        var label = clean(labelled[i].getAttribute('aria-label'));
+        // "Location: San Francisco, California, Within 5 mi"
+        if (/^Location\\b/i.test(label)) {
+          candidates.push(label.slice(0, 80));
+          if (!best) { best = label; source = 'aria-label'; }
+        }
+      }
+
+      if (!best) {
+        // Fall back to anything clickable whose text reads like a place and a
+        // distance: "San Francisco, California · Within 5 mi", "Toronto · 5 mi".
+        var buttons = document.querySelectorAll('[role="button"], button');
+        for (var j = 0; j < buttons.length; j++) {
+          var text = clean(buttons[j].innerText);
+          if (text && text.length < 60 && /\\d+\\s*(mi|km)\\b/i.test(text)) {
+            candidates.push(text.slice(0, 80));
+            if (!best) { best = text; source = 'text'; }
+          }
+        }
+      }
+
+      return JSON.stringify({
+        pill: best,
+        source: source,
+        candidates: candidates.slice(0, 4),
+        href: location.href
+      });
+    })()
+    """
+
     /// An item page's own fields, in the shape `RawDetail` already decodes.
     ///
     /// The discriminator is the whole design. Item pages carry ~20 other

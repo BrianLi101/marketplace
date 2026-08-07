@@ -93,7 +93,19 @@ final class Preferences: ObservableObject {
                 ?? Self.defaultRadiusKM
         hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
         locationName = defaults.string(forKey: Key.locationName)
-        locationSlug = defaults.string(forKey: Key.locationSlug)
+        // Drop a stored slug that is no longer offered. Five of the cities this
+        // app used to list are not places Facebook recognises, and a rejected
+        // slug doesn't fail — it silently serves the IP-inferred city
+        // (`docs/location-targeting.md` §1). Removing them from the picker left
+        // anyone who had one selected still sending it on every search, with
+        // the sheet now showing a *different* city than the one being queried.
+        let storedSlug = defaults.string(forKey: Key.locationSlug)
+        if let storedSlug, MarketplaceCity.named(storedSlug) == nil {
+            locationSlug = nil
+            locationName = nil
+        } else {
+            locationSlug = storedSlug
+        }
         lastQueryKind = defaults.string(forKey: Key.lastQueryKind)
         lastQueryValue = defaults.string(forKey: Key.lastQueryValue)
         sort = defaults.string(forKey: Key.sortBy)

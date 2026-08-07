@@ -72,7 +72,13 @@ final class DesktopFeedEngine: NSObject, ObservableObject, WKNavigationDelegate 
         state = .loading
         Logger.desktop.info("loading \(query.url.absoluteString, privacy: .public)")
         await navigate(to: query.url)
-        return await harvest()
+        let payload = await harvest()
+        // Logged on every search, because a refused place is otherwise
+        // invisible: the grid fills with a healthy-looking set of listings for
+        // a city nobody asked for.
+        let located = await readLocation()
+        Logger.desktop.info("location: \(located.summary, privacy: .public)")
+        return payload
     }
 
     /// Polls for the payload rather than waiting on `didFinish`.
@@ -166,6 +172,55 @@ final class DesktopFeedEngine: NSObject, ObservableObject, WKNavigationDelegate 
     private struct RenderedResult: Decodable {
         let cards: [DesktopRawCard]
         let count: Int
+    }
+
+    /// Where this page actually is, from both instruments: the place segment in
+    /// the URL and the pill the page rendered.
+    ///
+    /// Cheap enough to call after every load, and worth it — an unrecognised
+    /// place is not an error, it is a full page of the wrong city's listings
+    /// (`docs/location-targeting.md` §2), and this is the only thing that
+    /// distinguishes it.
+    /// - Parameter pillTimeout: how long to wait for the pill to appear. The
+    ///   URL half is available immediately; the pill is rendered by the page's
+    ///   own scripts and lands *after* the payload this engine harvests, so a
+    ///   single read taken the moment listings are extractable finds nothing.
+    ///   Zero makes this a one-shot read of whatever is on screen now.
+    func readLocation(pillTimeout: Duration = .milliseconds(2500)) async -> DesktopPageLocation {
+        let deadline = ContinuousClock.now.advanced(by: pillTimeout)
+        var latest = DesktopPageLocation(urlPlace: MarketplaceURLPlace.parse(webView.url), pill: nil)
+
+        repeat {
+            guard let json = await evaluate(DesktopScripts.extractLocationPill),
+                  let data = json.data(using: .utf8),
+                  let result = try? JSONDecoder().decode(PillResult.self, from: data)
+            else { break }
+
+            // Prefer the URL the page ended on over the one we asked for:
+            // Facebook rewrites the path *during* the load, and the webview's
+            // own property can still hold the pre-redirect value.
+            let settled = result.href.flatMap(URL.init(string:))
+                .map(MarketplaceURLPlace.parse) ?? latest.urlPlace
+            latest = DesktopPageLocation(
+                urlPlace: settled,
+                pill: result.pill.map(DesktopLocationPill.init(rawPillText:))
+            )
+            if latest.pill != nil { return latest }
+
+            // Nothing yet. Say what the page did offer, so an empty result is
+            // traceable to a selector rather than assumed to be a missing pill.
+            Logger.desktop.debug("pill: none yet, \(result.candidates.count) candidates")
+            try? await Task.sleep(for: .milliseconds(250))
+        } while ContinuousClock.now < deadline
+
+        return latest
+    }
+
+    private struct PillResult: Decodable {
+        let pill: String?
+        let source: String?
+        let candidates: [String]
+        let href: String?
     }
 
     /// Scrolls one screen and reports whether the document grew.
