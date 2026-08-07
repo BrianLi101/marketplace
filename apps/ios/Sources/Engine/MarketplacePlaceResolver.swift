@@ -33,6 +33,10 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         case notAsked
         /// Facebook resolved to nothing usable — no place segment in the URL.
         case unresolved
+        /// It resolved, but a fresh load of the resulting URL didn't come back
+        /// naming that place. The characteristic failure of this whole area:
+        /// the results look fine and are for somewhere else.
+        case notConfirmed(shown: String?)
     }
 
     private let webView: WKWebView
@@ -98,9 +102,64 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         // Facebook's own name for it, falling back to the segment so the user
         // always sees something rather than a blank chip.
         let name = value(in: result, key: "name") ?? segment.capitalized
+        let browseURL = url?.absoluteString
         Logger.place.info("resolved \(coordinate.latitude, privacy: .public),\(coordinate.longitude, privacy: .public) -> \(name, privacy: .public) [\(segment, privacy: .public)]")
-        return .success(ResolvedPlace(name: name, segment: segment,
-                                      coordinate: coordinate, origin: origin))
+
+        // Applying is not the same as it having worked.
+        return await confirm(ResolvedPlace(name: name, segment: segment,
+                                           coordinate: coordinate, origin: origin,
+                                           browseURL: browseURL))
+    }
+
+    /// Loads the resulting URL from scratch and checks that the page comes back
+    /// naming the place we think we set.
+    ///
+    /// This is not belt-and-braces. A refused place doesn't error — Facebook
+    /// rewrites the path and serves the IP-inferred city with a full, healthy
+    /// result set (`docs/location.md` §3), so "it applied" and "it worked" are
+    /// genuinely different claims and only one of them is worth storing.
+    ///
+    /// Deliberately a **fresh navigation** rather than reading the page still on
+    /// screen. The post-Apply page was mutated client-side by React and would
+    /// tell us what the picker believes; what matters is what the server does
+    /// with this URL on a cold request, which is the request every later search
+    /// will make.
+    func confirm(_ place: ResolvedPlace) async -> Result<ResolvedPlace, Failure> {
+        guard let target = place.browseURL.flatMap(URL.init(string:)) else {
+            return .failure(.unresolved)
+        }
+        await navigate(to: target)
+        // The pill renders after the payload — measured at up to ~2.5 s — so a
+        // single read here would report "no pill" for a page that has one.
+        var located = await readLocation()
+        for _ in 0..<10 where located.pill == nil {
+            try? await Task.sleep(for: .milliseconds(300))
+            located = await readLocation()
+        }
+        Logger.place.info("confirm \(place.segment, privacy: .public): \(located.summary, privacy: .public)")
+
+        guard located.wasAccepted else {
+            return .failure(.notConfirmed(shown: located.pill?.placeName))
+        }
+        // Nil means "no pill to compare", which is not a failure — the page may
+        // simply not have drawn one. A pill that names a *different* place is.
+        if located.pillAgrees(withRequestedName: place.name) == false {
+            return .failure(.notConfirmed(shown: located.pill?.placeName))
+        }
+        var confirmed = place
+        confirmed.verifiedPill = located.pill?.rawPillText
+        confirmed.verifiedAt = Date()
+        return .success(confirmed)
+    }
+
+    /// Reads the URL's place and the rendered pill together, so a disagreement
+    /// between them is visible rather than averaged away.
+    private func readLocation() async -> DesktopPageLocation {
+        let raw = await js(GeoPickerScripts.readResult)
+        let url = value(in: raw, key: "url").flatMap(URL.init(string:))
+        let pillText = value(in: raw, key: "pill")
+        return DesktopPageLocation(urlPlace: MarketplaceURLPlace.parse(url),
+                                   pill: pillText.map(DesktopLocationPill.init(rawPillText:)))
     }
 
     // MARK: - Plumbing

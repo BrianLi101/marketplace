@@ -28,6 +28,28 @@ struct ResolvedPlace: Codable, Equatable, Identifiable {
     var origin: Origin
     var resolvedAt: Date
 
+    /// The URL Facebook landed on once the place was applied, kept verbatim.
+    ///
+    /// Worth storing rather than rebuilding. Facebook chose this form —
+    /// `/marketplace/toronto/?radius_in_km=65` — and reusing what it produced
+    /// avoids re-deriving a URL from parts and getting the form subtly wrong.
+    /// It is also the thing to re-check against: if a later load of this URL
+    /// stops naming this place, the place has gone stale rather than the app
+    /// having a bug somewhere else.
+    var browseURL: String?
+
+    /// The pill text seen on a **fresh load** of `browseURL`, e.g.
+    /// "Toronto · 8 km", and when that check ran.
+    ///
+    /// Nil means never confirmed. That is different from confirmed-and-wrong,
+    /// and the UI says so, because a silent refusal is this whole area's
+    /// characteristic failure: Facebook serves a full, healthy-looking result
+    /// set for a city nobody asked for.
+    var verifiedPill: String?
+    var verifiedAt: Date?
+
+    var isVerified: Bool { verifiedAt != nil }
+
     var id: String { segment }
 
     enum Origin: String, Codable {
@@ -43,13 +65,17 @@ struct ResolvedPlace: Codable, Equatable, Identifiable {
     }
 
     init(name: String, segment: String, coordinate: CLLocationCoordinate2D,
-         origin: Origin, resolvedAt: Date = Date()) {
+         origin: Origin, resolvedAt: Date = Date(),
+         browseURL: String? = nil, verifiedPill: String? = nil, verifiedAt: Date? = nil) {
         self.name = name
         self.segment = segment
         latitude = coordinate.latitude
         longitude = coordinate.longitude
         self.origin = origin
         self.resolvedAt = resolvedAt
+        self.browseURL = browseURL
+        self.verifiedPill = verifiedPill
+        self.verifiedAt = verifiedAt
     }
 
     /// How far the device has drifted from where this was resolved. Only

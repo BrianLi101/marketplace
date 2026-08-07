@@ -455,5 +455,6 @@ item — several of these are harder or easier than they look. Items marked
 | `docs/filter-parameters.md` | Every sort/filter parameter, which surface honours it, and what's measured |
 | `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isnt worth calling |
 | `docs/logged-in-findings.md` | What a signed-in session changes: seller identity yes, structured depth no |
-| `docs/location-targeting.md` | Why slugs can't target a user's location and place ids can, and where the ids come from |
+| **`docs/location.md`** | **Everything about location, both surfaces — start here.** What Facebook accepts, why a refusal is silent, the coordinate route, the verification protocol, the fuzz lattice, and where distances are measured from |
+| `docs/location-targeting.md` | The raw desktop session record: slugs vs place ids, and the §5a/§5b correction that found the coordinate route |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |

@@ -69,6 +69,14 @@ struct LocationPickerSheet: View {
                         Text("Facebook calls this `\(place.segment)`")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        // Says it was checked, not just requested. A place that
+                        // resolved and then quietly served somewhere else is
+                        // never stored, so anything shown here is confirmed.
+                        if let pill = place.verifiedPill {
+                            Label("Confirmed on Facebook — \(pill)", systemImage: "checkmark.seal")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
@@ -166,6 +174,12 @@ struct LocationPickerSheet: View {
             case .noArrow: "Facebook's location dialog didn't offer the current-location button."
             case .notAsked: "Facebook didn't ask for a position."
             case .unresolved: "Facebook didn't recognise that place."
+            case .notConfirmed(let shown):
+                if let shown {
+                    "Facebook set the location but then served \(shown) instead. Not saved."
+                } else {
+                    "Couldn't confirm the location took effect. Not saved."
+                }
             }
         }
     }

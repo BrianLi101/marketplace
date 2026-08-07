@@ -120,7 +120,10 @@ enum GeoPickerScripts {
         .map(function(e){ return (e.textContent||'').trim(); })
         .filter(function(t){ return /·\\s*\\d+\\s*(mi|km)/i.test(t) && t.length < 60; })[0] || null;
       var name = pill ? pill.split('·')[0].trim() : null;
-      return JSON.stringify({ name: name, url: location.href });
+      // The raw pill goes back untouched as well as parsed — `DesktopLocationPill`
+      // reads the radius out of it, and an unexpected format is only
+      // debuggable if the original text survives (probe checklist §2).
+      return JSON.stringify({ name: name, pill: pill, url: location.href });
     })()
     """
 }
