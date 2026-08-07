@@ -70,6 +70,55 @@ final class DistanceResolver: ObservableObject {
         return "~\(Int(miles.rounded())) mi"
     }
 
+    // MARK: - Enriched known listings
+    //
+    // A listing the user has opened before is a *known* listing: its item page
+    // was read, and item pages — and only item pages — publish an approximate
+    // coordinate for the listing itself. That coordinate is cached with the
+    // rest of its detail and comes back with the card on every later search
+    // (`ListingStore.absorb` seeds from the profile store), so the grid already
+    // holds a better answer than the one it has been drawing.
+    //
+    // The difference is not cosmetic. Every other card measures from the
+    // *centroid of a city*, which for the sample listing sits ~4.5 km from
+    // where the listing actually is. Facebook itself never shows a distance at
+    // all — so for anything the user has looked at, this app can be more
+    // precise than the site it reads from.
+
+    /// Distance from the listing's **own** published point, or nil if we have
+    /// never opened it.
+    ///
+    /// Formatted a notch finer than the city-centroid version — one decimal
+    /// below ten miles, and no `~` — because it is a genuinely better number
+    /// and should read like one. It is still Facebook's *approximate* point,
+    /// deliberately fuzzed and labelled as such on the item page, so the
+    /// precision stops at a tenth of a mile rather than pretending to metres.
+    func enrichedDistanceText(for listing: Listing) -> String? {
+        guard let userLocation, let point = enrichedCoordinate(for: listing) else { return nil }
+        let miles = CLLocation(latitude: point.latitude, longitude: point.longitude)
+            .distance(from: userLocation) / 1609.34
+        if miles < 0.1 { return "here" }
+        if miles < 10 { return String(format: "%.1f mi", miles) }
+        return "\(Int(miles.rounded())) mi"
+    }
+
+    /// The listing's own approximate point, present only for listings whose
+    /// item page has been read.
+    func enrichedCoordinate(for listing: Listing) -> CLLocationCoordinate2D? {
+        guard let latitude = listing.detail?.latitude,
+              let longitude = listing.detail?.longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    /// The best distance available for a listing: measured from the listing
+    /// itself when it is known, and from the centroid of its city otherwise.
+    ///
+    /// One entry point so the grid, the saved shelf and the detail screen can
+    /// never disagree about how far away something is.
+    func bestDistanceText(for listing: Listing) -> String? {
+        enrichedDistanceText(for: listing) ?? distanceText(for: listing.locationText ?? listing.detail?.locationText)
+    }
+
     /// Kilometres to a listing, preferring its own approximate point over the
     /// centroid of its city.
     ///

@@ -34,7 +34,13 @@ struct ListingCard: View {
                 HStack(spacing: 4) {
                     Text(location)
                         .lineLimit(1)
-                    if let distance = distances.distanceText(for: location) {
+                    // Measured from the listing's own point once it's a known
+                    // listing, and from its city's centroid until then — see
+                    // "Enriched known listings" in `DistanceResolver`. A card
+                    // the user has opened before therefore gets a sharper,
+                    // decimal distance than the ones around it, which is
+                    // information Facebook never shows at all.
+                    if let distance = distances.bestDistanceText(for: listing) {
                         Text("·").foregroundStyle(.tertiary)
                         Text(distance)
                             .lineLimit(1)

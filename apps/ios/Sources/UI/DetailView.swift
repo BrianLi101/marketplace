@@ -383,11 +383,12 @@ struct DetailView: View {
 
     /// Measured from the listing's own point when we have it, falling back to
     /// the geocoded city centroid otherwise.
+    ///
+    /// Shares `DistanceResolver.bestDistanceText` with the grid rather than
+    /// deciding for itself: this screen and the card that opened it disagreeing
+    /// about how far away something is would be a bug the user could see.
     private var bestDistanceText: String? {
-        if let (coordinate, precision) = mapPoint, precision == .listing {
-            return distances.distanceText(to: coordinate)
-        }
-        return distances.distanceText(for: placeName)
+        distances.bestDistanceText(for: current)
     }
 
     @ViewBuilder

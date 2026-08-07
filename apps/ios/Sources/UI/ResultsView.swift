@@ -302,10 +302,9 @@ struct ResultsView: View {
                 result.items.append(listing)
                 continue
             }
-            let coordinate = listing.detail.flatMap { detail -> CLLocationCoordinate2D? in
-                guard let latitude = detail.latitude, let longitude = detail.longitude else { return nil }
-                return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-            }
+            // Same precedence as the card's label: a known listing is filtered
+            // on its own point, everything else on its city's centroid.
+            let coordinate = distances.enrichedCoordinate(for: listing)
             if let km = distances.distanceKM(for: listing.locationText, coordinate: coordinate),
                km > Double(prefs.radiusKM) {
                 result.hiddenByDistance += 1
