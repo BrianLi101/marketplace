@@ -394,7 +394,13 @@ struct DetailView: View {
     @ViewBuilder
     private var mapBlock: some View {
         if let place = placeName, let (coordinate, precision) = mapPoint {
-            LocationMapCard(place: place, coordinate: coordinate, precision: precision)
+            VStack(alignment: .leading, spacing: 10) {
+                LocationMapCard(place: place, coordinate: coordinate, precision: precision)
+                // Under the map, because it answers the question the map
+                // raises. Draws nothing without a device fix — see
+                // `TravelTimeRow`.
+                TravelTimeRow(destination: coordinate, precision: precision)
+            }
         }
     }
 

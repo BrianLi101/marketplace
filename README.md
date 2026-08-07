@@ -85,6 +85,15 @@ the San Francisco centroid the app currently geocodes to.
 Coordinates are **per item page only**. Feed cards never carry them, so
 card-level distance still has to come from geocoding the city name.
 
+That point is also what the detail screen routes against: `MapKitTravelTime`
+asks Apple for a walking, driving and transit ETA from the device's own fix
+(`MKDirections.calculateETA`, on tap, never on appear — routing is rate-limited
+and answers `MKError.loadingThrottled` when leaned on). Transit is ETA-only by
+design: the SDK marks `MKDirectionsTransportType.transit` as "Only supported for
+ETA calculations", which is exactly the question being asked. The row is hidden
+outright without a live fix, since the chosen search city says which listings
+come back, not where the user is standing.
+
 **Seller identity is mobile-only.** The mobile item page shows a seller name,
 join date, and rating where present; the web item page shows none of it.
 
