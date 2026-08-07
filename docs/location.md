@@ -14,13 +14,29 @@ file, this file is newer.
 
 ## 1. The one-paragraph version
 
-Facebook targets **places**, not coordinates. It will not accept a latitude and
+Facebook targets **places** in the URL and **coordinates** underneath it, and
+the two are not the same resolution. It will not accept a latitude and
 longitude as a URL parameter, and it never asks the browser where it is on its
-own. But its location picker has a "use my current location" button that *does*
-ask, and it accepts any answer — so a coordinate is a usable input after all,
-as something you feed the picker rather than something you put in a URL. What
-comes back is a place, and that place is what every later request uses. Radius
-is decorative everywhere; distance is ours to enforce.
+own — but its location picker has a "use my current location" button that
+*does* ask, and it accepts any answer. What comes back in the URL is a city:
+every Manhattan neighbourhood reduces to `/marketplace/nyc`. What is *not* in
+the URL is the exact point, which Facebook keeps in session state and uses to
+rank results. Radius is decorative everywhere; distance is ours to enforce.
+
+> ### The thing most likely to be got wrong
+>
+> **A slug is not a substitute for the coordinate.** It is tempting to read
+> "every neighbourhood collapses to the city" as "so a city lookup is
+> equivalent, and cheaper". It isn't. The place is city-level, but results are
+> ranked by the exact point, invisibly — two ends of Manhattan share **36%** of
+> their results from a byte-identical URL, against a noise floor of **zero**
+> (§5). And logged out the result set is capped at ~15, so a re-rank is not a
+> reordering of what you can see, it is a change to what you can see at all.
+>
+> Where a city lookup *is* enough: browsing somewhere you aren't. "Show me
+> Toronto" has no particular point behind it, so a place id and the centroid
+> lose nothing. Where it isn't: "where I actually am", which is the whole
+> reason the picker is worth ten seconds.
 
 ---
 
@@ -35,7 +51,7 @@ Measured on desktop; mobile agrees everywhere both were tested.
 | `latitude=`/`longitude=` params | **no** | silently ignored — a San Diego pair against an SF IP returned San Francisco ×15 |
 | ZIP as a path segment | **no** | `94110`, `94103`, `m5v` all rejected |
 | `navigator.geolocation`, unprompted | **never called** | 0 calls across load and search, both surfaces, recorder proved live |
-| coordinate via the picker's arrow | **yes** | §5 — the useful one |
+| coordinate via the picker's arrow | **yes, and it is kept** | §5 — the useful one. The URL reduces to a city, but the point itself is retained in session state and ranks results |
 | `radius` / `radius_in_km` | **decorative** | §7 |
 
 ### Place ids
@@ -137,11 +153,16 @@ Measured end to end: fed London (51.5074, −0.1278) from a session sitting on
 "London · 8 km", British listings. Neither leftover state nor IP could produce
 that.
 
-### How fine-grained is the answer? City-level. (measured 2026-08-07)
+### How fine-grained is the answer? Two answers, and they differ. (2026-08-07)
 
-A coordinate does **not** buy neighbourhood targeting. Nine coordinates fed
-through the picker, each trial reset to London first so a no-op couldn't be
-mistaken for a result:
+**The URL is city-level. The ranking is not.** Read either half alone and you
+will draw the wrong conclusion, so both are below: first what the URL does, then
+what it hides.
+
+#### The URL: neighbourhoods collapse to the city
+
+Nine coordinates fed through the picker, each trial reset to London first so a
+no-op couldn't be mistaken for a result:
 
 | fed | path returned | pill |
 |---|---|---|
@@ -173,11 +194,13 @@ are exactly three of the five cities whose guessed slugs failed in §3. So:
 * a table for the fast path must therefore store **place ids**, and the picker
   is still needed to discover ids for anything not in it
 
-### …but the coordinate is still kept, off to the side (measured 2026-08-07)
+#### The ranking: the exact coordinate is kept, and used
 
-The city-level URL is not the whole story. Facebook **retains the exact
-coordinate in session state** and centres results on it, even though nothing in
-the URL says so.
+The city-level URL is not the whole story, and this is the half that gets
+missed. Facebook **retains the exact coordinate in session state** and ranks
+results by proximity to it, even though nothing in the URL says so. Two
+requests that are identical on the wire return substantially different result
+sets depending only on the point fed to the picker beforehand.
 
 Same URL every time — `/marketplace/sanfrancisco/search/?query=desk` — varying
 only the coordinate fed to the picker beforehand:
@@ -397,13 +420,39 @@ Apple and Facebook each do the half they are good at: Apple knows *where* a
 typed place is and can tell Toronto ON from NSW from OH; Facebook knows *what
 it calls* the place containing that point.
 
+### Two rules for anyone changing this
+
+1. **Never substitute a slug for a coordinate on the user's own location.**
+   Caching city → place id is a fine optimisation for "browse somewhere else",
+   where no particular point was meant. It is a downgrade for "where I am",
+   because the slug cannot carry the ranking (§5) and the user will silently
+   get a different, worse set of results with nothing on screen to explain it.
+2. **The coordinate only survives inside the session that set it.** It lives in
+   session state, not the URL, so any webview that searches without having run
+   the picker gets city-level ranking regardless of what `ResolvedPlace` says.
+   See the open item in §11 — the app has this wrong today.
+
 ---
 
 ## 11. Open questions
 
-* Does `radius_in_km` from the picker route do anything? (§7)
-* Does the picker behave the same for a signed-in session? All of §5 was
-  measured logged out.
+* **The app throws the coordinate away.** `MarketplacePlaceResolver` runs on
+  `.unauthed`, a fresh non-persistent store per instance; `DesktopFeedEngine`
+  searches on `.authed`. The session state holding the point is discarded when
+  the resolver's webview goes, so searches get city-level ranking and the ten
+  seconds spent resolving buys only the slug. Fixing it means running the
+  picker in the store the searches use — a decision, not a bug fix, since it
+  ties the coordinate to the signed-in session where today the resolution is
+  anonymous.
+* Does the radius do anything? Unknown, and untested because the control is not
+  a native `<select>` — it renders as a div reading "Radius 5 miles", so the
+  probe couldn't set it and every run used the default 5 mi. A 1 mi radius
+  would turn §5's re-ranking into outright filtering, which would be a much
+  stronger claim than anything measured so far. (§7)
+* Does any of §5 hold for a **signed-in** session? It was all measured logged
+  out, where the ~15 result cap is what makes re-ranking decisive. Signed in
+  the feed scrolls indefinitely, so distant listings stay reachable and the
+  coordinate may matter considerably less.
 * Should a `.deviceFix` place re-resolve when the user has moved a long way
   from where it was resolved? `ResolvedPlace.metres(from:)` exists for this and
   nothing calls it yet.
