@@ -7,7 +7,7 @@ Facebook — hands off to the Facebook app via a universal link.
 
 Two tabs. **Browse** searches and reads listings. **Seller** goes the other way:
 describe something you own and it finds what similar things are listed for near
-you, then prices it and writes the listing with Apple's on-device model.
+you, what has actually sold, and what to ask.
 
 ```
 apps/ios/       the app (xcodegen: `xcodegen generate`, then build the Marketplace scheme)
@@ -269,15 +269,13 @@ can't price at all.
 ## The Seller tab
 
 The app has two tabs now. **Browse** is everything above. **Seller** takes a
-description of something you own, searches Marketplace for it, and returns a
-price, a title and a description with copy buttons — the price backed by what is
-listed near you at that moment, the words written by Apple's on-device model.
-Nothing typed there leaves the phone.
+description of something you own, searches Marketplace for it, shows what is
+listed nearby and what has recently sold, and works out what to ask.
 
-It is two page loads per draft — the active board, then what has sold — and it
+It is two page loads per run — the active board, then what has sold — and it
 opens no item pages. It shares `RequestPacer` with the browse engines and runs
-on its own `DesktopFeedEngine`, so drafting a listing doesn't navigate the
-results the user was reading.
+on its own `DesktopFeedEngine`, so pricing an item doesn't navigate the results
+the user was reading. Nothing typed there leaves the phone.
 
 **It can see sold listings, which nothing else in the app can.** A plain
 Marketplace search returns **0 sold and 0 pending** cards, so every listing this
@@ -302,28 +300,47 @@ is allowed to claim, all measured 2026-08-07:
   "this price is too high". The prompt says so in as many words, because a model
   given a set of sold prices will otherwise treat them as a target.
 
-**Every number is Swift's; every sentence is the model's.** That line is drawn
-where it is because of what happened on the other side of it, all measured
-against the real model on 2026-08-07.
+### The on-device writer, and why it's out
+
+An earlier version used Apple's on-device model (`FoundationModels`) to name the
+item, choose a price inside the measured band, and draft a description. It
+worked — verified against the real model — and it is **removed for now**, for a
+reason that has nothing to do with output quality.
+
+`SystemLanguageModel.availability` reports `.available` on the strength of Apple
+Intelligence being *switched on*. It says nothing about whether the 3B model
+asset is actually installed, and there is no API that distinguishes the two. So
+the app passes its availability check, calls the model, and fails — with an
+error that arrives bridged to `NSError`, so even the case name is unrecoverable
+and the framework's own message is the useless `"The operation couldn't be
+completed. (…GenerationError error -1.)"`.
+
+That is the permanent state of the **iOS simulator**, whose assets all carry
+`version: (none)` with `update available false` — not downloading, and not going
+to. So the feature degraded to an apology on the machine it gets developed on,
+and shipped a "may still be downloading" message that was false there. Removing
+it costs the title and description and nothing else: every number was Swift's
+already, and the price is the median the model was steered towards anyway.
+
+The implementation and its prompts are in commit `1c54a9f`. What was learned is
+worth keeping whether or not it comes back, all measured against the real model:
 
 - **It cannot do arithmetic about its own evidence.** Asked to justify its
   figure against fourteen prices it had just been shown, it wrote "you are
   asking CA$20 more than the median price of CA$80". The median was CA$77 and
   the gap was CA$33 — two wrong numbers in one confident sentence, printed under
-  the one figure a person acts on. `PriceGuide` writes that explanation now.
+  the one figure a person acts on. `PriceGuide.explanation` writes that line
+  now, and still does.
 - **It is not repeatable at the default temperature.** Three runs on one dresser
-  returned CA$100, CA$110 and CA$140. At `temperature: 0.3` it holds. The answer
-  is additionally clamped to the observed price range, because a recommendation
-  outside the evidence isn't a bolder opinion, it's a number with nothing behind
-  it.
+  returned CA$100, CA$110 and CA$140. `temperature: 0.3` holds it. Its answer
+  was also clamped to the observed price range, because a recommendation outside
+  the evidence isn't a bolder opinion, it's a number with nothing behind it.
 - **It invents condition, and pushing for richer prose makes it worse.** It
   wrote "the rest of the dresser is in good condition" about an item whose only
   stated fact was a scratched top, and "a few minor scratches on the frame"
   about a bike whose seller mentioned none. Asking for each fault in its own
   sentence produced *three* invented faults for a stroller described only as
-  "folds flat, barely used". So the description is deliberately conservative: it
-  restates the seller accurately and stops. That is a modest service, and
-  inventing wear on someone's behalf is not a service at all.
+  "folds flat, barely used".
 - **It takes the item's identity from the comparables if you let it.** Given a
   stroller to name and a page of dressers to price against, it titled the
   stroller "IKEA Malm 4 Drawer Dresser White" on all three runs. The comps are
@@ -331,20 +348,18 @@ against the real model on 2026-08-07.
   so.
 - **Four narrow calls beat one wide one.** Asked for title, price, rationale and
   body together it wrote a clean title and had slid into advertising copy by the
-  fourth field. Split into separate sessions, the same rules hold.
+  fourth field. Split into separate sessions, the same rules held.
+- **The safety guardrail is reachable in ordinary use.** "WhiteIKEAMalm dressed"
+  trips it where the same words spaced properly do not — a keyboard swallowing
+  spaces is enough to get a refusal.
 
-Two things about availability that the API doesn't tell you. `availability`
-reports `.available` on the strength of Apple Intelligence being *switched on*,
-before the model asset has finished downloading — the iOS 26 simulator reports
-available and then fails every generation with `ModelManagerError 1026` against
-an asset whose version is `(none)`, which is why the full draft is verified on
-the host rather than in the simulator. And the safety guardrail is reachable in
-ordinary use: "WhiteIKEAMalm dressed" trips it where the same words spaced
-properly do not, so a keyboard swallowing spaces is enough to get a refusal.
+The one job it did that survived is turning "IKEA Malm 6 drawer dresser, white,
+barely used, from a pet-free home" into a query that finds anything. `SearchTerm`
+does it with a filler-word list, and produced the same query as the model on the
+cases tried.
 
-Both degrade to the same place. The market search and the price guide are pure
-Swift and always run, so a device that can't write still answers the question
-the user came with, and says which half is missing.
+What is left needs no model at all: the market search, the sold check, the
+arithmetic, and the price. That was always the load-bearing half.
 
 ---
 
@@ -604,17 +619,16 @@ item — several of these are harder or easier than they look. Items marked
       "around CA$X" off a sample of two. It says the count, which is the
       minimum, but a two-listing median is not a price guide and the screen
       should probably decline rather than round down to one.
-- [ ] **The description could be worth more than a restatement.** It is
-      conservative because every attempt to enrich it produced invented facts
-      (see **The Seller tab**). The route that hasn't been tried is giving the
+- [ ] **Bring the writer back, once it can be relied on.** Removed because
+      `availability` can't tell "Apple Intelligence is on" from "the model is
+      installed" (see **The Seller tab**). Two things would change that: a real
+      device to verify against, since the simulator never will, and a check that
+      fails *before* the UI promises anything — the cheapest being a tiny
+      throwaway generation at tab-appear, cached for the session.
+      When it returns, the route not yet tried for the description is giving the
       model *more real material* rather than more licence — the seller's own
       photos via the vision model, or the enriched detail from a comparable the
       user points at. More input beats a looser prompt.
-- [ ] **The item is described once, in a text field, and never revised.** The
-      obvious next turn is a follow-up — "make it shorter", "mention it's from a
-      pet-free home" — which `LanguageModelSession` supports natively by keeping
-      the session alive across turns rather than building a new one per call.
-      Would want a transcript-shaped UI rather than the current one-shot form.
 
 **Known defects**
 

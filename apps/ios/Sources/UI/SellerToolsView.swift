@@ -2,12 +2,12 @@ import SwiftUI
 import UIKit
 
 /// The Seller tab: describe what you're selling, and get a price backed by what
-/// is actually listed nearby, plus a title and description to paste in.
+/// is actually listed nearby and what has actually sold.
 ///
 /// The screen is built as a **transcript** rather than a form that fills in.
 /// Four things happen — a search term is worked out, the market is searched,
-/// the prices are read, the listing is written — and they take a few seconds
-/// between them. Naming each one as it happens is not decoration: the whole
+/// the sold listings are checked, the prices are read — and they take a few
+/// seconds between them. Naming each one as it happens is not decoration: the
 /// claim this feature makes is "this price comes from real listings near you",
 /// and a spinner followed by a number asks the user to take that on faith.
 /// Watching it go and look is the evidence.
@@ -28,8 +28,7 @@ struct SellerToolsView: View {
                     if !model.steps.isEmpty { transcript }
                     if !model.comps.isEmpty { comparables }
                     if !model.sold.isEmpty { recentlySold }
-                    if !model.draft.isEmpty { draftFields }
-                    if let notice = model.writingNotice { noticeCard(notice) }
+                    if model.hasResult { priceField }
                     if case .failed(let message) = model.phase { failureCard(message) }
                     if model.phase == .done { startOver }
                 }
@@ -43,10 +42,6 @@ struct SellerToolsView: View {
             .navigationDestination(item: $selected) { listing in
                 DetailView(listing: listing, namespace: heroNamespace)
             }
-            // The model takes a moment to load the first time. Doing it while
-            // the user is still typing means the draft starts the instant they
-            // ask for it rather than after it.
-            .task { model.prewarm() }
         }
     }
 
@@ -55,9 +50,9 @@ struct SellerToolsView: View {
     private var prompt: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Label("AI Seller Tools", systemImage: "sparkles")
+                Label("Seller Tools", systemImage: "tag")
                     .font(.title3.weight(.semibold))
-                Text("Describe what you're selling. This looks at what similar things are listed for in \(model.marketName), then prices it and writes the listing — all on this device.")
+                Text("Describe what you're selling. This looks at what similar things are listed for in \(model.marketName), and what's actually sold there lately, then works out what to ask.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -196,17 +191,19 @@ struct SellerToolsView: View {
         return "Sold in ≤\(days) days"
     }
 
-    // MARK: - The draft
+    // MARK: - The answer
 
-    private var draftFields: some View {
+    /// One field, because there is one answer.
+    ///
+    /// This used to sit under a "Your listing" heading beside a generated title
+    /// and description. Those are gone with the on-device model
+    /// (`SellerToolsModel`), and the price was always the part the market
+    /// evidence actually supported — the strips above are its working.
+    private var priceField: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Your listing")
+            Text("What to ask")
                 .font(.headline)
-
-            if let title = model.draft.title, !title.isEmpty {
-                CopyableField(caption: "TITLE", display: title, copies: title)
-            }
-            if let price = model.draft.price, price > 0 {
+            if let price = model.recommendedPrice {
                 CopyableField(caption: "PRICE",
                               // Labelled the way the comparables above are —
                               // "CA$80" beside a strip of CA$ cards, never "$80".
@@ -214,37 +211,12 @@ struct SellerToolsView: View {
                               // Bare, because it is going into Facebook's price
                               // box, which wants a number.
                               copies: String(price),
-                              footnote: model.draft.rationale ?? priceFootnote)
-            }
-            if let body = model.draft.body, !body.isEmpty {
-                CopyableField(caption: "DESCRIPTION", display: body, copies: body, isProse: true)
+                              footnote: model.priceRationale)
             }
         }
-    }
-
-    /// Used when there is no model to explain its own number — the price came
-    /// straight from the median, so this says exactly that rather than leaving
-    /// a figure with no provenance.
-    private var priceFootnote: String? {
-        guard let guide = model.guide, guide.count > 0 else { return nil }
-        return "The middle of \(guide.count) asking price\(guide.count == 1 ? "" : "s") nearby."
     }
 
     // MARK: - Endings
-
-    private func noticeCard(_ text: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-    }
 
     private func failureCard(_ message: String) -> some View {
         InlineNotice(text: message, actionTitle: "Try again") { model.start() }

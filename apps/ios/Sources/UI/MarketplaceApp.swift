@@ -56,7 +56,7 @@ struct RootView: View {
                 ResultsView()
                     .tabItem { Label("Browse", systemImage: "magnifyingglass") }
                 SellerToolsView()
-                    .tabItem { Label("Seller", systemImage: "sparkles") }
+                    .tabItem { Label("Seller", systemImage: "tag") }
             }
 
             // §2.1 — the engines' webviews must be in the hierarchy or WebKit
