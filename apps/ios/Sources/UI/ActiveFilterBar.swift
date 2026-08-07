@@ -31,7 +31,11 @@ struct ActiveFilterBar: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        // Tight to the search field above. The bar reads as belonging to it —
+        // where, how sorted, what else — so the two want to look like one
+        // block rather than two stacked controls with air between them.
+        .padding(.top, 2)
+        .padding(.bottom, 10)
         .background(.bar)
     }
 
@@ -101,11 +105,7 @@ struct ActiveFilterBar: View {
     private var locationValue: String {
         let place = prefs.locationName ?? "Choose a location"
         guard prefs.radiusKM > 0 else { return place }
-        return "\(place) · \(miles(prefs.radiusKM)) mi"
-    }
-
-    private func miles(_ km: Int) -> Int {
-        Int((Double(km) / 1.60934).rounded())
+        return "\(place) · \(SearchQuery.kilometresToMiles(prefs.radiusKM)) mi"
     }
 
     // MARK: - Chips

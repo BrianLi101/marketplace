@@ -71,7 +71,6 @@ struct FilterSheet: View {
     private struct FilterSnapshot: Equatable {
         var sort: SearchQuery.Sort
         var delivery: SearchQuery.Delivery
-        var radiusKM: Int
         var minPrice: Int?
         var maxPrice: Int?
         var conditions: [SearchQuery.Condition]
@@ -79,8 +78,7 @@ struct FilterSheet: View {
     }
 
     private var current: FilterSnapshot {
-        FilterSnapshot(sort: prefs.sort, delivery: prefs.delivery, radiusKM: prefs.radiusKM,
-                       minPrice: prefs.minPrice, maxPrice: prefs.maxPrice,
+        FilterSnapshot(sort: prefs.sort, delivery: prefs.delivery,                        minPrice: prefs.minPrice, maxPrice: prefs.maxPrice,
                        conditions: prefs.conditions, citySlug: prefs.locationSlug)
     }
 
@@ -89,9 +87,12 @@ struct FilterSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     section("Sort by") { sortControl }
-                    section("Location") { locationControl }
-                    section("Distance", footnote: "Applied on this device — Facebook ignores distance in a search.") {
-                        distanceControl
+                    // Distance moved in with the location picker. The two are
+                    // read as one phrase — "San Francisco · 10 mi" — and having
+                    // to visit two sheets to change one phrase was the split
+                    // showing through.
+                    section("Location", footnote: "Place and distance, together.") {
+                        locationControl
                     }
                     section("Viewed", footnote: "Applied on this device — Facebook has no filter like this.") {
                         viewedControl
@@ -192,14 +193,6 @@ struct FilterSheet: View {
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
         }
         .foregroundStyle(.primary)
-    }
-
-    private var distanceControl: some View {
-        wrapping(Preferences.radiusOptions, id: \.self) { km in
-            pill("\(SearchQuery.kilometresToMiles(km)) mi", isOn: prefs.radiusKM == km) {
-                prefs.radiusKM = km
-            }
-        }
     }
 
     /// The one filter with no remote counterpart at all. Distance at least has

@@ -32,6 +32,7 @@ struct LocationPickerSheet: View {
         NavigationStack {
             List {
                 currentSection
+                distanceSection
                 if !cities.suggestions.isEmpty { suggestionSection }
                 if let failure { failureSection(failure) }
             }
@@ -97,6 +98,45 @@ struct LocationPickerSheet: View {
             Text("Your coordinate is sent to Facebook once, to name the place. "
                  + "Searches after that use the place name, not your position.")
         }
+    }
+
+    /// Distance lives here rather than in the filter sheet.
+    ///
+    /// "San Francisco · 10 mi" is one thought — where, and how far — and the
+    /// bar states it as one readout, so the control that changes it should be
+    /// one screen too. Splitting them meant tapping the location pill to change
+    /// the place, then a different sheet to change the radius, for a phrase the
+    /// user reads as a single fact.
+    private var distanceSection: some View {
+        Section {
+            WrapLayout(spacing: 8) {
+                ForEach(Preferences.radiusOptions, id: \.self) { km in
+                    distancePill("\(SearchQuery.kilometresToMiles(km)) mi", isOn: prefs.radiusKM == km) {
+                        prefs.radiusKM = km
+                    }
+                }
+                distancePill("Any", isOn: prefs.radiusKM == 0) { prefs.radiusKM = 0 }
+            }
+            .padding(.vertical, 4)
+        } header: {
+            Text("Distance")
+        } footer: {
+            // Worth repeating here: this one is ours, and it is the reason a
+            // result set can look emptier than the place suggests.
+            Text("Applied on this device — Facebook ignores distance in a search.")
+        }
+    }
+
+    private func distancePill(_ text: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.subheadline)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(Capsule().fill(isOn ? Color.accentColor : Color(.secondarySystemBackground)))
+                .foregroundStyle(isOn ? Color.white : Color.primary)
+        }
+        .buttonStyle(.plain)
     }
 
     private var suggestionSection: some View {
