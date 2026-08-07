@@ -64,18 +64,30 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
     /// the middle of it.
     func resolve(_ coordinate: CLLocationCoordinate2D,
                  origin: ResolvedPlace.Origin) async -> Result<ResolvedPlace, Failure> {
+        let started = Date()
+        func mark(_ stage: String) {
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            Logger.place.info("timing \(stage, privacy: .public) +\(ms, privacy: .public)ms")
+        }
+
         await navigate(to: URL(string: "https://www.facebook.com/marketplace/")!)
-        try? await Task.sleep(for: .seconds(4))
+        mark("loaded")
 
         _ = await js(GeoPickerScripts.arm(latitude: coordinate.latitude,
                                           longitude: coordinate.longitude))
 
-        guard await flag(GeoPickerScripts.openDialog, "opened") else {
+        guard await waitFor(GeoPickerScripts.pillPresent),
+              await flag(GeoPickerScripts.openDialog, "opened") else {
             Logger.place.error("resolve: no location pill")
             return .failure(.noPill)
         }
-        try? await Task.sleep(for: .seconds(2))
+        guard await waitFor(GeoPickerScripts.arrowPresent) else {
+            Logger.place.error("resolve: no centring arrow")
+            return .failure(.noArrow)
+        }
+        mark("dialog")
 
+        _ = await js(GeoPickerScripts.armArrowLatch)
         let arrow = await js(GeoPickerScripts.clickArrow)
         guard arrow.contains("\"clicked\":true") else {
             Logger.place.error("resolve: no centring arrow")
@@ -85,12 +97,16 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
             Logger.place.error("resolve: arrow did not ask for a position")
             return .failure(.notAsked)
         }
-        // The picker reverse-geocodes over the network before the field
-        // updates, and Apply before that lands commits the *old* place.
-        try? await Task.sleep(for: .seconds(3))
+        mark("arrow")
 
+        // Bounded, and proceeding anyway on timeout is safe: applying too early
+        // commits the old place, and `confirm` catches exactly that. A slow
+        // failure that reports itself beats a fast one that doesn't.
+        _ = await waitFor(GeoPickerScripts.arrowSettled, timeout: .seconds(6))
+        _ = await js(GeoPickerScripts.snapshotURL)
         _ = await js(GeoPickerScripts.apply)
-        try? await Task.sleep(for: .seconds(4))
+        _ = await waitFor(GeoPickerScripts.urlChanged)
+        mark("applied")
 
         let result = await js(GeoPickerScripts.readResult)
         let url = value(in: result, key: "url").flatMap(URL.init(string:))
@@ -106,6 +122,7 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         Logger.place.info("resolved \(coordinate.latitude, privacy: .public),\(coordinate.longitude, privacy: .public) -> \(name, privacy: .public) [\(segment, privacy: .public)]")
 
         // Applying is not the same as it having worked.
+        defer { mark("confirmed") }
         return await confirm(ResolvedPlace(name: name, segment: segment,
                                            coordinate: coordinate, origin: origin,
                                            browseURL: browseURL))
@@ -131,11 +148,8 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         await navigate(to: target)
         // The pill renders after the payload — measured at up to ~2.5 s — so a
         // single read here would report "no pill" for a page that has one.
-        var located = await readLocation()
-        for _ in 0..<10 where located.pill == nil {
-            try? await Task.sleep(for: .milliseconds(300))
-            located = await readLocation()
-        }
+        _ = await waitFor(GeoPickerScripts.pillPresent, timeout: .seconds(8))
+        let located = await readLocation()
         Logger.place.info("confirm \(place.segment, privacy: .public): \(located.summary, privacy: .public)")
 
         guard located.wasAccepted else {
@@ -166,6 +180,26 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
 
     private func flag(_ script: String, _ key: String) async -> Bool {
         await js(script).contains("\"\(key)\":true")
+    }
+
+    /// Polls a script until it reports `ready`, or gives up.
+    ///
+    /// Every wait in this file used to be a fixed sleep, which is the wrong
+    /// instrument twice over: it costs the full duration on a fast run, and on
+    /// a slow one it isn't enough — a measured run loaded the page in 4.2 s and
+    /// still had no pill 4 s later, failing the whole resolution. Waiting for
+    /// the actual condition is both quicker and steadier.
+    private func waitFor(_ script: String,
+                         timeout: Duration = .seconds(12),
+                         every: Duration = .milliseconds(200)) async -> Bool {
+        let seconds = Double(timeout.components.seconds)
+            + Double(timeout.components.attoseconds) / 1e18
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if await flag(script, "ready") { return true }
+            try? await Task.sleep(for: every)
+        }
+        return false
     }
 
     private func value(in json: String, key: String) -> String? {

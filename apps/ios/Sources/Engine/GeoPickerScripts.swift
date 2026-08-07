@@ -74,6 +74,67 @@ enum GeoPickerScripts {
         """
     }
 
+    /// Is the header pill there yet?
+    ///
+    /// Split out from `openDialog` so the caller can *wait* for it. A fixed
+    /// sleep was both too long and too short: on a run where the page took
+    /// 4.2 s to load, the pill still wasn't drawn 4 s later and the whole
+    /// resolution failed.
+    static let pillPresent = """
+    (function(){
+      var btn = Array.prototype.slice.call(document.querySelectorAll('div[role="button"]'))
+        .filter(function(e){ var t = (e.textContent||'').trim();
+                             return /·\\s*\\d+\\s*(mi|km)/i.test(t) && t.length < 80; })[0];
+      return JSON.stringify({ ready: !!btn });
+    })()
+    """
+
+    /// Is the centring arrow there yet? The dialog animates in.
+    static let arrowPresent = """
+    (function(){
+      return JSON.stringify({
+        ready: !!document.querySelector('[aria-label="Marketplace geolocation picker"]')
+      });
+    })()
+    """
+
+    /// Has the picker finished reverse-geocoding?
+    ///
+    /// Applying before it lands commits the *old* place, so this has to be
+    /// waited for. The tempting signal — "the dialog's text changed" — is a
+    /// trap: re-resolving the city you are already in produces the same text,
+    /// and the wait then burns its whole timeout on a request that finished
+    /// immediately. Measured: 12.3 s of a 20 s resolution, spent waiting for
+    /// San Francisco to stop being San Francisco.
+    ///
+    /// The arrow itself is the place-independent signal. Clicking it replaces
+    /// it with a spinner, and it returns when the answer arrives — so "gone,
+    /// then back" means done regardless of what the answer was.
+    static let armArrowLatch = """
+    (function(){ window.__arrowWentBusy = false; return JSON.stringify({ ready: true }); })()
+    """
+
+    static let arrowSettled = """
+    (function(){
+      var present = !!document.querySelector('[aria-label="Marketplace geolocation picker"]');
+      if (!present) window.__arrowWentBusy = true;
+      return JSON.stringify({ ready: !!window.__arrowWentBusy && present });
+    })()
+    """
+
+    /// Remembers the URL, so the navigation Apply triggers can be waited for
+    /// instead of slept through.
+    static let snapshotURL = """
+    (function(){ window.__urlSnapshot = location.href;
+                 return JSON.stringify({ ready: true }); })()
+    """
+
+    static let urlChanged = """
+    (function(){
+      return JSON.stringify({ ready: location.href !== (window.__urlSnapshot || '') });
+    })()
+    """
+
     /// Opens the "Change location" dialog from the header pill.
     ///
     /// The pill's units follow the *place*, not the viewer — a Canadian
