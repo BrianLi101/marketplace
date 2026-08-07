@@ -82,6 +82,28 @@ deliberately fuzzed — Facebook labels it "Location is approximate" — but it 
 far better than a city centroid: for the sample listing it sits ~4.5 km from
 the San Francisco centroid the app currently geocodes to.
 
+**How fuzzed, measured (2026-08-06).** Facebook publishes no number for this.
+Every range the item page shows — "Within 40 mi" in the sidebar, "San Francisco
+· 40 mi" over the picks — is the *viewer's own search radius*; against the
+listing it says only "Location is approximate". But the coordinates are
+quantised, and 56 cached item pages (46 distinct points, Bay Area, logged out)
+recover the lattice exactly:
+
+| axis | step | on the ground at 37.8°N |
+| --- | --- | --- |
+| latitude | `360/2^16` = 0.0054931640625° | 611 m |
+| longitude | `360/2^15` = 0.010986328125° | 966 m |
+
+Worst residual across the sample is `4.6e-10°` — this is exact snapping, not
+rounding noise — and five different listings share one identical point, which
+is what a grid this size looks like in a dense city. So a published point means
+"somewhere in this cell", the cell is **wider than it is tall**, and the true
+location is at most ~572 m away (half-diagonal). `FacebookCoordinateGrid` holds
+the constants and the map draws the cell rather than an invented circle.
+
+The lattice is a *lower* bound: Facebook may also jitter before snapping, and
+nothing observable from outside can rule that out.
+
 Coordinates are **per item page only**. Feed cards never carry them, so
 card-level distance still has to come from geocoding the city name.
 

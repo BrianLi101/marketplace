@@ -13,6 +13,7 @@ struct DetailView: View {
     @EnvironmentObject private var distances: DistanceResolver
     @EnvironmentObject private var saved: SavedListings
     @EnvironmentObject private var viewed: ViewedListings
+    @EnvironmentObject private var location: LocationProvider
     @State private var current: Listing
     @State private var didFail = false
     @State private var isEnriching = true
@@ -395,7 +396,8 @@ struct DetailView: View {
     private var mapBlock: some View {
         if let place = placeName, let (coordinate, precision) = mapPoint {
             VStack(alignment: .leading, spacing: 10) {
-                LocationMapCard(place: place, coordinate: coordinate, precision: precision)
+                LocationMapCard(place: place, coordinate: coordinate, precision: precision,
+                                userLocation: location.coordinate)
                 // Under the map, because it answers the question the map
                 // raises. Draws nothing without a device fix — see
                 // `TravelTimeRow`.
