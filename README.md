@@ -98,8 +98,14 @@ Worst residual across the sample is `4.6e-10°` — this is exact snapping, not
 rounding noise — and five different listings share one identical point, which
 is what a grid this size looks like in a dense city. So a published point means
 "somewhere in this cell", the cell is **wider than it is tall**, and the true
-location is at most ~572 m away (half-diagonal). `FacebookCoordinateGrid` holds
-the constants and the map draws the cell rather than an invented circle.
+location is at most ~572 m away (half-diagonal).
+
+`FacebookCoordinateGrid` holds the constants. The map draws the **circle that
+circumscribes** the cell rather than the cell itself: Facebook shows an area
+around its own listings, and matching that shape is worth more to someone
+comparing the two screens than the extra fidelity of a rectangle. The size is
+still measured — the circle can overstate slightly at the corners and can never
+understate.
 
 The lattice is a *lower* bound: Facebook may also jitter before snapping, and
 nothing observable from outside can rule that out.

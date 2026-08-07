@@ -23,8 +23,11 @@ import CoreLocation
 ///   to a grid this size looks like in a dense city
 ///
 /// A published point therefore means "somewhere in this cell", and the cell is
-/// wider than it is tall. That is a rectangle, not a radius, which is why the
-/// map draws one.
+/// wider than it is tall. The map draws the circle that circumscribes it
+/// rather than the cell itself — Facebook shows an area around its own
+/// listings, and matching that shape is worth more to someone comparing the
+/// two screens than the extra fidelity of a rectangle. `worstCaseError` is the
+/// radius that makes the circle contain the whole cell.
 ///
 /// The lattice is a *lower* bound on the fuzz: it is possible Facebook also
 /// jitters a point before snapping it, and no amount of sampling from outside
@@ -37,24 +40,6 @@ enum FacebookCoordinateGrid {
     /// 0.010986328125° — about 966 m of longitude at San Francisco's latitude,
     /// narrowing towards the poles.
     static let longitudeStep = 360.0 / 32_768
-
-    /// The four corners of the cell a published point stands for, taking the
-    /// snap to be round-to-nearest and so centring the cell on the point.
-    ///
-    /// Whether Facebook rounds or floors isn't observable without knowing a
-    /// listing's true location, and centring is the symmetric assumption: if
-    /// it floors, this rectangle is the right size and shape but offset by
-    /// half a cell.
-    static func cell(around point: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
-        let dLat = latitudeStep / 2
-        let dLon = longitudeStep / 2
-        return [
-            CLLocationCoordinate2D(latitude: point.latitude - dLat, longitude: point.longitude - dLon),
-            CLLocationCoordinate2D(latitude: point.latitude - dLat, longitude: point.longitude + dLon),
-            CLLocationCoordinate2D(latitude: point.latitude + dLat, longitude: point.longitude + dLon),
-            CLLocationCoordinate2D(latitude: point.latitude + dLat, longitude: point.longitude - dLon),
-        ]
-    }
 
     /// The cell's size on the ground, which depends on latitude east-west.
     static func cellSize(at latitude: CLLocationDegrees) -> (northSouth: CLLocationDistance,

@@ -31,48 +31,51 @@ struct LocationMapCard: View {
         /// which is a far weaker claim and has to look like one.
         case city
 
-        /// Radius of the circle drawn for a city centroid, in metres.
-        ///
-        /// Unlike `.listing`, this one is still a guess — a city-sized blob,
-        /// not a measurement. `.listing` draws the lattice cell instead, whose
-        /// size is known.
+        /// Radius of the circle drawn for a city centroid, in metres. Still a
+        /// guess — a city-sized blob, not a measurement, unlike `.listing`.
         var cityRadius: CLLocationDistance { 6_000 }
-
-        /// Frames the drawn area at roughly a third of the map's width, so the
-        /// zoom follows the claim instead of being fixed at city scale.
-        var span: CLLocationDistance {
-            switch self {
-            case .listing: FacebookCoordinateGrid.longitudeStep * 111_320 * 3
-            case .city: cityRadius * 3
-            }
-        }
 
         var caption: String {
             switch self {
-            // The measured cell, stated in the units the rest of the screen
-            // uses. Saying the size is the point: "approximate" on its own
+            // Saying the size is worth a few words: "approximate" on its own
             // invites the reader to imagine a street, and it's a district.
-            case .listing: "Approximate area · about 0.4 × 0.6 mi"
+            case .listing: "Approximate area · within about 0.4 mi"
             case .city: "City only"
             }
         }
     }
 
+    /// Radius of the drawn circle, in metres.
+    ///
+    /// A circle rather than the lattice cell it stands for, deliberately.
+    /// Facebook draws an area around its own listings, and a user
+    /// cross-referencing the two screens shouldn't have to wonder why ours is
+    /// a rectangle — the familiar shape is worth more here than the extra
+    /// fidelity, since both are saying the same thing: "somewhere around
+    /// here".
+    ///
+    /// The *size* is still measured rather than invented. This is the cell's
+    /// half-diagonal, so the circle circumscribes the real uncertainty region:
+    /// it can overstate the area slightly at the corners, and can never
+    /// understate it. ~572 m in San Francisco, widening towards the equator as
+    /// the cell does.
+    private var areaRadius: CLLocationDistance {
+        switch precision {
+        case .listing: FacebookCoordinateGrid.worstCaseError(at: coordinate.latitude)
+        case .city: precision.cityRadius
+        }
+    }
+
+    /// Frames the drawn area at roughly a third of the map's width, so the
+    /// zoom follows the claim instead of being fixed at city scale.
+    private var span: CLLocationDistance { areaRadius * 3 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Map(initialPosition: .region(region), interactionModes: []) {
-                switch precision {
-                case .listing:
-                    // The lattice cell Facebook snapped the point to — the
-                    // actual region the listing is in, wider than it is tall.
-                    MapPolygon(coordinates: FacebookCoordinateGrid.cell(around: coordinate))
-                        .foregroundStyle(.tint.opacity(0.18))
-                        .stroke(.tint.opacity(0.55), lineWidth: 1)
-                case .city:
-                    MapCircle(center: coordinate, radius: precision.cityRadius)
-                        .foregroundStyle(.tint.opacity(0.18))
-                        .stroke(.tint.opacity(0.55), lineWidth: 1)
-                }
+                MapCircle(center: coordinate, radius: areaRadius)
+                    .foregroundStyle(.tint.opacity(0.18))
+                    .stroke(.tint.opacity(0.55), lineWidth: 1)
 
                 if let userLocation {
                     // Drawn from the fix the app already holds rather than with
@@ -117,18 +120,18 @@ struct LocationMapCard: View {
     /// the subject, and the dot is context when there's room for it.
     private var region: MKCoordinateRegion {
         let listingOnly = MKCoordinateRegion(center: coordinate,
-                                             latitudinalMeters: precision.span,
-                                             longitudinalMeters: precision.span)
+                                             latitudinalMeters: span,
+                                             longitudinalMeters: span)
         guard let userLocation else { return listingOnly }
         let separation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
             .distance(from: CLLocation(latitude: userLocation.latitude, longitude: userLocation.longitude))
-        guard separation < precision.span * 1.5 else { return listingOnly }
+        guard separation < span * 1.5 else { return listingOnly }
         let centre = CLLocationCoordinate2D(
             latitude: (coordinate.latitude + userLocation.latitude) / 2,
             longitude: (coordinate.longitude + userLocation.longitude) / 2
         )
         // 2.6x the separation leaves a comfortable margin around both ends.
-        let meters = max(precision.span, separation * 2.6)
+        let meters = max(span, separation * 2.6)
         return MKCoordinateRegion(center: centre,
                                   latitudinalMeters: meters,
                                   longitudinalMeters: meters)
