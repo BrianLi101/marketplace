@@ -20,6 +20,7 @@ struct ResultsView: View {
     @State private var selected: Listing?
     @State private var showSettings = false
     @State private var showFilters = false
+    @State private var showLocationPicker = false
 
     @State private var showSignIn = false
 
@@ -72,6 +73,25 @@ struct ResultsView: View {
                 guard !term.isEmpty else { return }
                 activeTerm = term
                 Task { await search(term) }
+            }
+            // Pinned rather than scrolled with the results: the point of the
+            // bar is that what shaped this result set is readable *while*
+            // reading the result set, and a readout that scrolls away answers
+            // the question only before it gets asked.
+            //
+            // Only over results. On the home screen there is no query for a
+            // sort to order, and a control that does nothing is worse than no
+            // control.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if store.query != nil {
+                    ActiveFilterBar(
+                        onLocation: { showLocationPicker = true },
+                        onRerun: { Task { await rerunCurrentQuery() } }
+                    )
+                }
+            }
+            .sheet(isPresented: $showLocationPicker) {
+                LocationPickerSheet()
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { profileButton }
