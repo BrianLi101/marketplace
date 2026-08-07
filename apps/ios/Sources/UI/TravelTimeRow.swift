@@ -3,10 +3,18 @@ import CoreLocation
 
 /// "How long to go get it?", under the map.
 ///
-/// Deliberately behind a tap rather than computed on appear. Routing is a
-/// rate-limited network call, and the question is one a user asks about the one
-/// listing they're seriously considering — not about all forty they scrolled
-/// past. One tap, all three modes.
+/// Runs on its own, as soon as there's a point worth routing to. Opening a
+/// listing is already the deliberate act — nobody taps into a detail screen by
+/// accident — so making the user ask a second time bought nothing.
+///
+/// What it does wait for is a *settled* destination. The map shows the city
+/// centroid until the item page lands and then jumps to the listing's own
+/// point, and routing to the centroid first would spend three requests on the
+/// wrong place and then visibly rewrite every number under the user. So the
+/// trigger is the point, not the screen: a listing already in the cache routes
+/// on the first frame, and a cold one routes the moment enrichment settles —
+/// including when it settles on failure, where the centroid is all there will
+/// ever be.
 ///
 /// Appears only when the device has an actual fix. Everything else on this
 /// screen degrades gracefully without one; a travel time cannot, because there
@@ -15,36 +23,53 @@ import CoreLocation
 struct TravelTimeRow: View {
     let destination: CLLocationCoordinate2D
     let precision: LocationMapCard.Precision
+    /// The item page is still in flight, so `destination` may yet be replaced.
+    let isEnriching: Bool
 
     @EnvironmentObject private var location: LocationProvider
     @StateObject private var travel = MapKitTravelTime.shared
-    @State private var didAsk = false
 
     var body: some View {
         if let origin = location.coordinate {
             VStack(alignment: .leading, spacing: 8) {
-                if didAsk {
-                    modes
+                modes
+                HStack(spacing: 8) {
                     Text(caption)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
-                } else {
-                    Button {
-                        didAsk = true
-                        Task { await travel.estimateAll(from: origin, to: destination) }
-                    } label: {
-                        Label("Estimate travel time", systemImage: "clock.arrow.circlepath")
-                            .font(.subheadline)
+                    // Throttling and dropped connections are both transient and
+                    // both look identical from here, so the only sensible
+                    // response is to offer another go.
+                    if anyFailed {
+                        Button("Try again") { Task { await run(from: origin) } }
+                            .font(.caption)
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
                 }
             }
-            // A new listing is a new question. Without this the row would stay
-            // open, showing the previous listing's answer for a moment.
-            .onChange(of: destination.latitude) { didAsk = false }
+            // Keyed on the destination *and* on whether it can still change, so
+            // this fires once for a settled point and re-fires if the item page
+            // moves it. Same key on return within the freshness window means
+            // the cached answer is reused rather than re-requested.
+            .task(id: trigger) {
+                guard !isEnriching || precision == .listing else { return }
+                await run(from: origin)
+            }
         }
     }
+
+    private func run(from origin: CLLocationCoordinate2D) async {
+        await travel.estimateAll(from: origin, to: destination)
+    }
+
+    private var trigger: String {
+        "\(destination.latitude),\(destination.longitude),\(isEnriching)"
+    }
+
+    private var estimates: [MapKitTravelTime.Estimate] {
+        MapKitTravelTime.Mode.allCases.map { travel.estimate(for: destination, mode: $0) ?? .pending }
+    }
+
+    private var anyFailed: Bool { estimates.contains(.failed) }
 
     private var modes: some View {
         HStack(spacing: 8) {

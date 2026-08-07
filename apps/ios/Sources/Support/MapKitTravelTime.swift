@@ -65,7 +65,15 @@ final class MapKitTravelTime: ObservableObject {
         /// Throttled, offline, or a server failure. Worth another tap.
         case failed
 
-        var isSettled: Bool { self != .pending }
+        /// Worth keeping. A failure deliberately isn't: it says nothing about
+        /// the route, only about the moment it was asked, so caching one would
+        /// make the retry button do nothing for ten minutes.
+        var isCacheable: Bool {
+            switch self {
+            case .travelTime, .unroutable: true
+            case .pending, .failed: false
+            }
+        }
     }
 
     /// Keyed on the destination rather than the listing id, because the point
@@ -97,12 +105,14 @@ final class MapKitTravelTime: ObservableObject {
         estimates[Key(destination: destination, mode: mode)]
     }
 
-    /// Every mode at once, on one deliberate tap.
+    /// Every mode at once, for one listing.
     ///
-    /// Only ever user-initiated — `MKDirections` is a rate-limited network
-    /// service that answers with `MKError.loadingThrottled` when leaned on, so
-    /// three requests per tap is the budget, and nothing is computed for a
-    /// listing the user hasn't asked about.
+    /// Three requests is the whole budget for a screen. `MKDirections` is a
+    /// rate-limited service that answers with `MKError.loadingThrottled` when
+    /// leaned on, so the caller is expected to have a *settled* destination
+    /// before asking — see `TravelTimeRow`, which waits for the item page
+    /// rather than routing to the city centroid and then again to the listing.
+    /// Nothing here is ever computed for a listing the user hasn't opened.
     func estimateAll(from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async {
         await withTaskGroup(of: Void.self) { group in
             for mode in Mode.allCases {
@@ -117,7 +127,7 @@ final class MapKitTravelTime: ObservableObject {
                          to destination: CLLocationCoordinate2D,
                          mode: Mode) async {
         let key = Key(destination: destination, mode: mode)
-        if let existing = estimates[key], existing.isSettled,
+        if let existing = estimates[key], existing.isCacheable,
            let at = computedAt[key], Date().timeIntervalSince(at) < Self.freshness {
             return
         }
