@@ -5,6 +5,10 @@ signing in. SwiftUI renders everything the user sees; a hidden `WKWebView` is
 the data layer. Any action that needs an account — messaging, offers, saving on
 Facebook — hands off to the Facebook app via a universal link.
 
+Two tabs. **Browse** searches and reads listings. **Seller** goes the other way:
+describe something you own and it finds what similar things are listed for near
+you, then prices it and writes the listing with Apple's on-device model.
+
 ```
 apps/ios/       the app (xcodegen: `xcodegen generate`, then build the Marketplace scheme)
 apps/backend/   placeholder — runtime not chosen yet, see its README
@@ -227,6 +231,65 @@ of 24 results were listed one and nine hours ago — but drags the geography out
 to Stockton, Davis and Sacramento. `daysSinceListed=1` keeps 10 of 15 results in
 the requested city. For a local browser the date filter is the better lever, and
 ordering can be done client-side.
+
+---
+
+## The Seller tab
+
+The app has two tabs now. **Browse** is everything above. **Seller** takes a
+description of something you own, searches Marketplace for it, and returns a
+price, a title and a description with copy buttons — the price backed by what is
+listed near you at that moment, the words written by Apple's on-device model.
+Nothing typed there leaves the phone.
+
+It is one page load per draft and it opens no item pages, so it costs the same
+traffic as one search. It shares `RequestPacer` with the browse engines and runs
+on its own `DesktopFeedEngine`, so drafting a listing doesn't navigate the
+results the user was reading.
+
+**Every number is Swift's; every sentence is the model's.** That line is drawn
+where it is because of what happened on the other side of it, all measured
+against the real model on 2026-08-07.
+
+- **It cannot do arithmetic about its own evidence.** Asked to justify its
+  figure against fourteen prices it had just been shown, it wrote "you are
+  asking CA$20 more than the median price of CA$80". The median was CA$77 and
+  the gap was CA$33 — two wrong numbers in one confident sentence, printed under
+  the one figure a person acts on. `PriceGuide` writes that explanation now.
+- **It is not repeatable at the default temperature.** Three runs on one dresser
+  returned CA$100, CA$110 and CA$140. At `temperature: 0.3` it holds. The answer
+  is additionally clamped to the observed price range, because a recommendation
+  outside the evidence isn't a bolder opinion, it's a number with nothing behind
+  it.
+- **It invents condition, and pushing for richer prose makes it worse.** It
+  wrote "the rest of the dresser is in good condition" about an item whose only
+  stated fact was a scratched top, and "a few minor scratches on the frame"
+  about a bike whose seller mentioned none. Asking for each fault in its own
+  sentence produced *three* invented faults for a stroller described only as
+  "folds flat, barely used". So the description is deliberately conservative: it
+  restates the seller accurately and stops. That is a modest service, and
+  inventing wear on someone's behalf is not a service at all.
+- **It takes the item's identity from the comparables if you let it.** Given a
+  stroller to name and a page of dressers to price against, it titled the
+  stroller "IKEA Malm 4 Drawer Dresser White" on all three runs. The comps are
+  numerically load-bearing and semantically poisonous, and the prompt has to say
+  so.
+- **Four narrow calls beat one wide one.** Asked for title, price, rationale and
+  body together it wrote a clean title and had slid into advertising copy by the
+  fourth field. Split into separate sessions, the same rules hold.
+
+Two things about availability that the API doesn't tell you. `availability`
+reports `.available` on the strength of Apple Intelligence being *switched on*,
+before the model asset has finished downloading — the iOS 26 simulator reports
+available and then fails every generation with `ModelManagerError 1026` against
+an asset whose version is `(none)`, which is why the full draft is verified on
+the host rather than in the simulator. And the safety guardrail is reachable in
+ordinary use: "WhiteIKEAMalm dressed" trips it where the same words spaced
+properly do not, so a keyboard swallowing spaces is enough to get a refusal.
+
+Both degrade to the same place. The market search and the price guide are pure
+Swift and always run, so a device that can't write still answers the question
+the user came with, and says which half is missing.
 
 ---
 
@@ -461,6 +524,41 @@ item — several of these are harder or easier than they look. Items marked
 - [ ] Needs the enrichment path to be cheap enough to open many listings —
       currently ~2s each and every open is traffic against Facebook, so this
       wants the backend and the shared cache before it's practical at scale.
+
+**Selling**
+
+- [ ] **The comparables are whatever keyword search returned, and nobody checks
+      they're comparable.** A search for "ikea malm dresser white" came back with
+      a 3-drawer Malm at CA$40, a 2-drawer bedside at CA$30 and an unrelated
+      white dresser at CA$150, all folded into one median. The strip is on screen
+      precisely so the user can see this, but the arithmetic can't. The
+      Embeddings item above is the real fix — embed the seller's description and
+      each comparable, and weight the median by similarity instead of counting
+      every card equally.
+- [ ] **Asking prices are the only prices Facebook gives us.** Everything the
+      price guide knows is what sellers *want*, never what anything sold for,
+      and the gap between those is the whole game in second-hand. The UI says so
+      in as many words. `isSold` is on the card and is excluded from the
+      arithmetic, but Facebook's "Sold" is seller-marked and carries no price
+      history, so it is not the missing signal. There may be no honest fix here,
+      only honest labelling — worth deciding deliberately rather than by
+      default.
+- [ ] **A price with no market behind it still gets shown.** With one or two
+      comparables there is no quartile band, and the guide falls back to
+      "around CA$X" off a sample of two. It says the count, which is the
+      minimum, but a two-listing median is not a price guide and the screen
+      should probably decline rather than round down to one.
+- [ ] **The description could be worth more than a restatement.** It is
+      conservative because every attempt to enrich it produced invented facts
+      (see **The Seller tab**). The route that hasn't been tried is giving the
+      model *more real material* rather than more licence — the seller's own
+      photos via the vision model, or the enriched detail from a comparable the
+      user points at. More input beats a looser prompt.
+- [ ] **The item is described once, in a text field, and never revised.** The
+      obvious next turn is a follow-up — "make it shorter", "mention it's from a
+      pet-free home" — which `LanguageModelSession` supports natively by keeping
+      the session alive across turns rather than building a new one per call.
+      Would want a transcript-shaped UI rather than the current one-shot form.
 
 **Known defects**
 

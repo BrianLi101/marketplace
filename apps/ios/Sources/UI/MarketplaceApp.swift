@@ -9,6 +9,7 @@ struct MarketplaceApp: App {
     @StateObject private var distances = DistanceResolver.shared
     @StateObject private var saved = SavedListings.shared
     @StateObject private var viewed = ViewedListings.shared
+    @StateObject private var seller = SellerToolsModel()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -20,6 +21,7 @@ struct MarketplaceApp: App {
                 .environmentObject(distances)
                 .environmentObject(saved)
                 .environmentObject(viewed)
+                .environmentObject(seller)
         }
         // Cache writes are coalesced on a 2s debounce, which is right for a
         // burst of writes and wrong for an app about to be killed. Leaving
@@ -42,10 +44,20 @@ struct MarketplaceApp: App {
 struct RootView: View {
     @EnvironmentObject private var store: ListingStore
     @EnvironmentObject private var prefs: Preferences
+    @EnvironmentObject private var seller: SellerToolsModel
 
     var body: some View {
         ZStack {
-            ResultsView()
+            // Two things this app does: find what other people are selling, and
+            // work out how to sell your own. They share a location, a session
+            // and a pacer, and nothing else — which is exactly what a tab
+            // boundary is for.
+            TabView {
+                ResultsView()
+                    .tabItem { Label("Browse", systemImage: "magnifyingglass") }
+                SellerToolsView()
+                    .tabItem { Label("Seller", systemImage: "sparkles") }
+            }
 
             // §2.1 — the engines' webviews must be in the hierarchy or WebKit
             // throttles them. But *covering* them isn't good enough either:
@@ -53,11 +65,18 @@ struct RootView: View {
             // parts of each card (notably the location line) never render at
             // all. So they're laid out at full size and pushed outside the
             // visible area, where WebKit still treats them as live.
+            //
+            // They sit beside the `TabView` rather than inside a tab for the
+            // same reason. A tab that isn't selected is torn down, and the
+            // seller tab's search would then be running in a webview SwiftUI
+            // had just removed from the hierarchy.
             HiddenWebViewHost(webView: store.desktop.webView)
                 .offset(x: 3000)
             HiddenWebViewHost(webView: store.feed.webView)
                 .offset(x: 3000)
             HiddenWebViewHost(webView: store.detail.webView)
+                .offset(x: 3000)
+            HiddenWebViewHost(webView: seller.webView)
                 .offset(x: 3000)
         }
         .fullScreenCover(isPresented: .init(
