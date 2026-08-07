@@ -53,12 +53,43 @@ struct ResolvedPlace: Codable, Equatable, Identifiable {
     var id: String { segment }
 
     enum Origin: String, Codable {
-        /// The device's own fix. Goes stale when the user moves.
+        /// The device's own fix — the user is browsing where they are.
+        ///
+        /// The stored coordinate is deliberately *not* refreshed as they move:
+        /// re-resolving on every step would spend a ten-second round trip to
+        /// arrive at the same city. Anything that needs to know where the user
+        /// is *now* — travel time, and only travel time — takes its own fresh
+        /// fix rather than trusting this one.
         case deviceFix
         /// A city the user searched for and picked. Stays true until they pick
         /// another one.
         case searchedCity
     }
+
+    /// Which kind of thing `segment` is.
+    ///
+    /// Facebook returns one path component that is *either* a slug or a numeric
+    /// place id, never both — `sanfrancisco` and `oakland` have slugs, while
+    /// Berkeley, Daly City and Palo Alto came back as ids
+    /// (`docs/location.md` §5). Storing two fields would leave one permanently
+    /// empty and give every reader two things to check.
+    enum SegmentKind: String, Codable {
+        case slug
+        case placeID
+    }
+
+    /// Derived rather than stored, so it can never disagree with `segment` and
+    /// nothing has to migrate. Same rule `MarketplaceURLPlace` uses to read a
+    /// place out of a URL.
+    var segmentKind: SegmentKind {
+        segment.count >= 8 && segment.allSatisfy(\.isNumber) ? .placeID : .slug
+    }
+
+    /// Is the app currently browsing where the user actually is?
+    ///
+    /// The one flag that decides whether "how long to get there" is a question
+    /// worth answering — see `TravelTimeRow`.
+    var isUserLocation: Bool { origin == .deviceFix }
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)

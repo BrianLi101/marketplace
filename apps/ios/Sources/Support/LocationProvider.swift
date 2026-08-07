@@ -48,6 +48,24 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     /// stored city slug, so this must never block indefinitely.
     func resolveOnce(timeout: Duration = .seconds(6)) async -> CLLocationCoordinate2D? {
         if let coordinate { return coordinate }
+        return await requestFix(timeout: timeout)
+    }
+
+    /// Takes a **new** fix, ignoring the cached one.
+    ///
+    /// Everything else in the app deliberately reuses one fix: the search
+    /// location is resolved once and held (`ResolvedPlace`), and distances are
+    /// measured from that saved point so they don't drift as the user walks.
+    ///
+    /// Travel time is the exception, and the only one. "How long would it take
+    /// me to get there" is a question about where the user is standing right
+    /// now, and answering it from a fix taken when the app launched is how you
+    /// get a confident twenty-minute drive that is actually five.
+    func resolveFresh(timeout: Duration = .seconds(6)) async -> CLLocationCoordinate2D? {
+        await requestFix(timeout: timeout)
+    }
+
+    private func requestFix(timeout: Duration) async -> CLLocationCoordinate2D? {
         guard manager.authorizationStatus != .denied, manager.authorizationStatus != .restricted else {
             state = .denied
             return nil

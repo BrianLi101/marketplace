@@ -22,19 +22,42 @@ import UIKit
 /// degrades gracefully without one; a travel time cannot, because there would
 /// be nowhere to travel *from*. The chosen search city is not a substitute: it
 /// says which listings Facebook returns, not where the user is.
+///
+/// **And the search itself has to be one the user is inside.** Browsing Toronto
+/// from San Francisco, "how long to get there" has no useful answer — the
+/// honest one is a flight, and nobody asked. So the row appears only while the
+/// saved location came from the device (`ResolvedPlace.isUserLocation`) rather
+/// than from a city someone searched for.
+///
+/// That is *in addition to* the distance cutoff, not instead of it — the two
+/// catch different things. The type gate handles browsing a city you are not
+/// in; the cutoff handles the individual listing that is 90 miles out of a
+/// search you ran from home, which "Newest first" produces regularly.
+///
+/// The fix it routes from is taken **fresh**, unlike everything else here.
+/// Distances measure from the saved search point precisely so they hold still
+/// as the user walks; travel time has the opposite requirement, because it is a
+/// question about where they are standing now.
 struct TravelTimeRow: View {
     let destination: CLLocationCoordinate2D
     let precision: LocationMapCard.Precision
 
     @EnvironmentObject private var location: LocationProvider
+    @EnvironmentObject private var prefs: Preferences
     @StateObject private var travel = MapKitTravelTime.shared
     @Environment(\.openURL) private var openURL
 
+    /// Where the user is *now*, re-fixed when this listing was opened. Nil
+    /// until it lands, so the row waits rather than routing from a stale point.
+    @State private var freshOrigin: CLLocationCoordinate2D?
+
     @ViewBuilder
     var body: some View {
-        if precision == .listing, isWorthRouting {
-            if let origin = location.coordinate {
-                estimates(from: origin)
+        if precision == .listing, prefs.resolvedPlace?.isUserLocation == true {
+            if let origin = freshOrigin {
+                if isWorthRouting(from: origin) {
+                    estimates(from: origin)
+                }
             } else if location.isUndecided {
                 // The one place in the app where location has an obvious,
                 // concrete payoff to point at — same argument as the seller
@@ -43,7 +66,7 @@ struct TravelTimeRow: View {
                 LocationPrompt(
                     title: "Enable location for travel estimates",
                     subtitle: "Walking, driving and transit times from where you are. Your location never leaves your device.",
-                    action: { Task { _ = await location.resolveOnce() } }
+                    action: { Task { freshOrigin = await location.resolveFresh() } }
                 )
             } else if location.isDenied {
                 LocationPrompt(
@@ -54,13 +77,13 @@ struct TravelTimeRow: View {
                     }
                 )
             } else {
-                // Authorised, fix not landed. Nothing to show and nothing to
-                // ask for — but the fix may never have been requested at all
-                // if the user came straight here from the saved shelf without
-                // searching, so ask now rather than sit empty forever.
+                // Authorised, fix not landed yet. Nothing to show and nothing
+                // to ask for — just take the fix. Keyed on the destination so
+                // opening a different listing re-fixes rather than reusing the
+                // position from the last one.
                 Color.clear
                     .frame(height: 0)
-                    .task { _ = await location.resolveOnce() }
+                    .task(id: trigger) { freshOrigin = await location.resolveFresh() }
             }
         }
     }
@@ -89,21 +112,13 @@ struct TravelTimeRow: View {
         .task(id: trigger) { await run(from: origin) }
     }
 
-    /// Travel time is always measured from the device, because it answers "how
-    /// long would it take *me* to go and get this" — the one question where
-    /// the user's real position is the only honest origin, even when they're
-    /// browsing another city.
-    ///
-    /// Which is exactly why it has to stop somewhere. Browsing Toronto from San
-    /// Francisco, the drive is a two-day answer to a question nobody asked, and
-    /// the transit leg is a flight MapKit won't route anyway. A hundred miles
-    /// is past any "go and collect it" trip and well short of a normal
-    /// metro-area search.
-    private var isWorthRouting: Bool {
-        guard let origin = location.coordinate else { return true }   // nothing to judge yet
-        let metres = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
-            .distance(from: CLLocation(latitude: origin.latitude, longitude: origin.longitude))
-        return metres < 160_000
+    /// A hundred miles is past any "go and collect it" trip and well short of a
+    /// normal metro-area search — which routinely reaches 60-90 miles under
+    /// "Newest first". Past that the drive is a two-day answer to a question
+    /// nobody asked, and the transit leg is a flight MapKit won't route anyway.
+    private func isWorthRouting(from origin: CLLocationCoordinate2D) -> Bool {
+        CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+            .distance(from: CLLocation(latitude: origin.latitude, longitude: origin.longitude)) < 160_000
     }
 
     private func run(from origin: CLLocationCoordinate2D) async {

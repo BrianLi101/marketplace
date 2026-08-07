@@ -132,8 +132,11 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
             Logger.place.error("resolve: unresolved — \(place.summaryDescription, privacy: .public)")
             return .failure(.unresolved)
         }
-        // Facebook's own name for it, falling back to the segment so the user
-        // always sees something rather than a blank chip.
+        // Provisional only. The pill here is read moments after Apply and
+        // routinely still shows the *previous* place — resolving Oakland Park
+        // from a San Francisco session read back "San Francisco" against the
+        // new place's id. `confirm` replaces this with the name from its own
+        // fresh, polled load.
         let name = value(in: result, key: "name") ?? segment.capitalized
         let browseURL = url?.absoluteString
         Logger.place.info("resolved \(coordinate.latitude, privacy: .public),\(coordinate.longitude, privacy: .public) -> \(name, privacy: .public) [\(segment, privacy: .public)]")
@@ -169,15 +172,22 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         let located = await readLocation()
         Logger.place.info("confirm \(place.segment, privacy: .public): \(located.summary, privacy: .public)")
 
-        guard located.wasAccepted else {
-            return .failure(.notConfirmed(shown: located.pill?.placeName))
-        }
-        // Nil means "no pill to compare", which is not a failure — the page may
-        // simply not have drawn one. A pill that names a *different* place is.
-        if located.pillAgrees(withRequestedName: place.name) == false {
+        // The **segment** is what gets checked, not the name.
+        //
+        // It is the thing every later search actually uses, and it is the thing
+        // Facebook rewrites when it refuses a place. Comparing display names
+        // instead produced false rejections: the name captured just after Apply
+        // is often the previous place's, so a perfectly good change looked like
+        // a mismatch and was thrown away.
+        guard located.wasAccepted, located.urlPlace.segment == place.segment else {
             return .failure(.notConfirmed(shown: located.pill?.placeName))
         }
         var confirmed = place
+        // Now the name can be trusted: this page was loaded cold and its pill
+        // was polled for, so it describes the place actually in the URL.
+        if let verified = located.pill?.placeName, !verified.isEmpty {
+            confirmed.name = verified
+        }
         confirmed.verifiedPill = located.pill?.rawPillText
         confirmed.verifiedAt = Date()
         return .success(confirmed)

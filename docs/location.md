@@ -394,8 +394,13 @@ search" share a location. The rules:
 
 | number | origin | why |
 |---|---|---|
-| card/detail distance, radius filter | the **searched city** when one was deliberately chosen, else the device fix | measured from a San Francisco fix, every Toronto listing reads "~2273 mi" and the radius filter hides the entire result set |
-| travel time | **always the device** | it answers "how long would it take *me* to go and get this", where the user's real position is the only honest origin — and it stops drawing past 100 miles rather than offering a two-day drive |
+| card/detail distance, radius filter | the **saved** `ResolvedPlace.coordinate`, whichever kind it is | browsing elsewhere, a live fix makes every Toronto listing read "~2273 mi" and empties the radius filter; browsing *here*, it makes distances drift as the user walks, so cards slide in and out of the radius with no search having happened. Distances belong to the search that produced them. |
+| travel time | a **fresh** device fix, taken when the listing is opened | it answers "how long would it take *me* to go and get this", which is a question about where they are standing now — the one place a stale position gives a confidently wrong answer |
+
+Travel time is also gated twice: it draws only while the saved location came
+from the device (`ResolvedPlace.isUserLocation`), and only for listings within
+100 miles. Those catch different things — browsing a city you are not in, and
+the individual listing 90 miles out of a search you ran from home.
 
 Known wart: the Saved shelf shows listings saved elsewhere at their distance
 from the *browsed* city, which reads oddly. Splitting the rule per surface

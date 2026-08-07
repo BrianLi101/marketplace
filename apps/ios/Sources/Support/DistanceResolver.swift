@@ -41,22 +41,27 @@ final class DistanceResolver: ObservableObject {
         userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
     }
 
-    /// Where distances should be measured *from*, which is not always the
-    /// device.
+    /// Where distances should be measured *from*: the coordinate the current
+    /// search was built on, whichever kind it is.
+    ///
+    /// Two reasons it is the saved point rather than the live device fix.
     ///
     /// Browsing another city breaks the assumption that "the user" and "the
     /// search" are in the same place. Measured from a San Francisco fix, every
     /// Toronto listing reads "~2273 mi" and the radius filter hides the entire
-    /// result set — technically true and completely useless, since the question
-    /// a distance answers here is "how far across *this* city", not "how far
-    /// from my house".
+    /// result set — technically true and useless, since the question a distance
+    /// answers here is "how far across *this* city".
     ///
-    /// So a deliberately-chosen city measures from that city, and the device
-    /// fix is used whenever the search is where the user actually is.
+    /// And even when the search *is* where the user is, a live fix means the
+    /// numbers drift as they walk: cards slide in and out of the radius with no
+    /// search having happened, which reads as the grid glitching. Distances
+    /// belong to the search that produced them, so they hold still until the
+    /// next one.
+    ///
+    /// The device fix is used only before any place has been resolved.
     static func origin(for place: ResolvedPlace?,
                        deviceFix: CLLocationCoordinate2D?) -> CLLocationCoordinate2D? {
-        if let place, place.origin == .searchedCity { return place.coordinate }
-        return deviceFix
+        place?.coordinate ?? deviceFix
     }
 
     /// The geocoded centre of a place name, once resolved. This is a city or
