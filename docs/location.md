@@ -137,6 +137,49 @@ Measured end to end: fed London (51.5074, −0.1278) from a session sitting on
 "London · 8 km", British listings. Neither leftover state nor IP could produce
 that.
 
+### How fine-grained is the answer? City-level. (measured 2026-08-07)
+
+A coordinate does **not** buy neighbourhood targeting. Nine coordinates fed
+through the picker, each trial reset to London first so a no-op couldn't be
+mistaken for a result:
+
+| fed | path returned | pill |
+|---|---|---|
+| SF / Inner Sunset | `/marketplace/sanfrancisco` | San Francisco · 5 mi |
+| SF / Mission | `/marketplace/sanfrancisco` | San Francisco · 5 mi |
+| SF / SoMa | `/marketplace/sanfrancisco` | San Francisco · 5 mi |
+| NYC / Midtown East | `/marketplace/nyc` | New York · 5 mi |
+| NYC / Williamsburg | `/marketplace/nyc` | *(stale — see below)* |
+| Oakland | `/marketplace/oakland` | Oakland · 5 mi |
+| Berkeley | `/marketplace/113857331958379` | Berkeley · 5 mi |
+| Daly City | `/marketplace/109415672417245` | Daly City · 5 mi |
+| Palo Alto | `/marketplace/104022926303756` | Palo Alto · 5 mi |
+
+Three separate San Francisco neighbourhoods collapse to one place, and both New
+York neighbourhoods collapse to `nyc`. **Neighbourhoods do not survive.**
+
+The radius doesn't carry them either: every result came back at 5 mi, whether
+the coordinate was a neighbourhood or a city centre, so there is no sense in
+which "Midtown East" persists as a tighter circle around New York.
+
+**But the city set is much finer than "major metros",** and this is the part
+that matters for any lookup table. Berkeley, Daly City and Palo Alto each
+resolved to their *own* distinct place rather than folding into San Francisco
+or Oakland — and each came back as a **numeric place id, not a slug**. Those
+are exactly three of the five cities whose guessed slugs failed in §3. So:
+
+* granularity is roughly "incorporated city", not "metro area"
+* only a minority of cities have a slug; the rest are ids
+* a table for the fast path must therefore store **place ids**, and the picker
+  is still needed to discover ids for anything not in it
+
+One read is unreliable and is left in rather than quietly dropped: the
+Williamsburg row's pill still said "London", the place the trial reset from.
+The path had already changed to `/marketplace/nyc`, so the resolution worked
+and the pill simply hadn't re-rendered when it was read. It is the same lag the
+app's `confirm` step polls for (§6), showing up here because this probe reads
+once on a fixed delay.
+
 ### The near-miss worth remembering
 
 The first run of that probe fed *Toronto* into a session already showing

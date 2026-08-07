@@ -37,6 +37,7 @@ struct ContentView: View {
                 Button("Picker") { controller.startPickerProbe() }
                 Button("Persist") { controller.startPersistenceProbe() }
                 Button("GeoFeed") { controller.startGeoFeedProbe() }
+                Button("Grain") { controller.startPlaceGranularityProbe() }
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -308,6 +309,65 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func startGeoFeedProbe() { Task { await runGeoFeedProbe() } }
+
+    /// How fine-grained is the place a coordinate resolves to?
+    ///
+    /// Hypothesis under test: Facebook snaps any coordinate to a *city*, so
+    /// picking a neighbourhood gains nothing — Midtown East becomes `nyc`,
+    /// Inner Sunset becomes `sanfrancisco`. If true, a table of major cities
+    /// would cover the fast path and the picker would only be needed for the
+    /// long tail.
+    ///
+    /// Every trial resets to **London** first. Without that, resolving an SF
+    /// neighbourhood from an SF session produces `sanfrancisco` whether the
+    /// click worked or did nothing at all — the same false-pass that nearly
+    /// spoiled the WKWebView run.
+    ///
+    /// The query string is echoed whole, because `radius_in_km=8&radius=1`
+    /// from a neighbourhood pick vs `radius_in_km=65` from a city pick would
+    /// mean the neighbourhood survives *as a radius* even when the place is
+    /// the city.
+    func runPlaceGranularityProbe() async {
+        webView.customUserAgent = Self.desktopUA
+
+        let cases: [(String, Double, Double)] = [
+            ("SF/Inner Sunset",  37.7625, -122.4745),
+            ("SF/Mission",       37.7599, -122.4148),
+            ("SF/SoMa",          37.7785, -122.4056),
+            ("Berkeley",         37.8715, -122.2730),
+            ("Oakland",          37.8044, -122.2712),
+            ("Daly City",        37.6879, -122.4702),
+            ("Palo Alto",        37.4419, -122.1430),
+            ("NYC/Midtown East", 40.7549,  -73.9707),
+            ("NYC/Williamsburg", 40.7081,  -73.9571),
+        ]
+
+        for (label, lat, lon) in cases {
+            // Reset, so every result is a change from the same known place.
+            await load("https://www.facebook.com/marketplace/london/")
+            try? await Task.sleep(for: .seconds(7))
+
+            _ = await js("(function(){ window.__geoFeed = { lat: \(lat), lon: \(lon) }; return '1'; })()")
+            let opened = await js(Self.openLocationDialogJS)
+            guard opened.contains("\"opened\":true") else {
+                emit("GRAIN[\(label)] dialog did not open — \(opened)")
+                continue
+            }
+            try? await Task.sleep(for: .seconds(3))
+            let arrow = await js(Self.clickGeoArrowJS)
+            guard arrow.contains("\"called\":true") else {
+                emit("GRAIN[\(label)] arrow did not ask — \(arrow)")
+                continue
+            }
+            try? await Task.sleep(for: .seconds(5))
+            _ = await js(Self.applyLocationJS)
+            try? await Task.sleep(for: .seconds(7))
+            emit("GRAIN[\(label)] \(await js(Self.readGrainJS))")
+        }
+        emit("=== GRAINPROBE COMPLETE ===")
+    }
+
+    func startPlaceGranularityProbe() { Task { await runPlaceGranularityProbe() } }
 
     func runPickerProbe() async {
         webView.customUserAgent = Self.desktopUA
@@ -3472,7 +3532,8 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
                                           geoMissing: window.__geoWasMissing });
       var before = window.__geoFedCalls;
       arrow.click();
-      return JSON.stringify({ clicked: true, callsBefore: before,
+      return JSON.stringify({ clicked: true, called: window.__geoFedCalls > before,
+                              callsBefore: before,
                               callsAfter: window.__geoFedCalls,
                               geoMissing: window.__geoWasMissing });
     })()
@@ -3499,6 +3560,25 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
       if (!apply) return JSON.stringify({ applied: false, reason: 'no Apply' });
       apply.click();
       return JSON.stringify({ applied: true });
+    })()
+    """
+
+    /// Path, query and pill together — the three things that would have to
+    /// agree for a neighbourhood to have survived.
+    static let readGrainJS = """
+    (function(){
+      var pill = Array.prototype.slice.call(document.querySelectorAll('div[role="button"],span'))
+        .map(function(e){ return (e.textContent||'').trim(); })
+        .filter(function(t){ return /·\\s*\\d+\\s*(mi|km)/i.test(t) && t.length < 60; })[0] || null;
+      var cities = {};
+      Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'))
+        .forEach(function(a){
+          var m = (a.getAttribute('aria-label') || a.textContent || '')
+            .match(/([A-Za-z .'-]+,\\s*[A-Z]{2})\\b/);
+          if (m) cities[m[1]] = (cities[m[1]] || 0) + 1;
+        });
+      return JSON.stringify({ path: location.pathname, query: location.search,
+                              pill: pill, cities: cities });
     })()
     """
 

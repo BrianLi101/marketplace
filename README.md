@@ -257,6 +257,20 @@ item — several of these are harder or easier than they look. Items marked
 
 **Location and radius**
 
+- [ ] **Cache city → place id, for a fast path.** Confirmed 2026-08-07: a
+      coordinate resolves to a **city**, not a neighbourhood. Inner Sunset,
+      Mission and SoMa all return `/marketplace/sanfrancisco`; Midtown East and
+      Williamsburg both return `/marketplace/nyc`. Radius doesn't carry the
+      neighbourhood either — every result came back at 5 mi regardless. So the
+      ~10 s picker round-trip buys nothing a lookup couldn't, *for cities we
+      already know*.
+      Two caveats that shape the table. The grain is "incorporated city", not
+      "metro": Berkeley, Daly City and Palo Alto each resolved to their own
+      place rather than folding into San Francisco or Oakland. And each of those
+      came back as a **numeric place id, not a slug** — the same three whose
+      guessed slugs failed. So the table must store place ids, and the picker
+      stays as the slow path that discovers ids for anything not in it.
+      (`docs/location.md` §5.)
 - [ ] **The drawn radius still needs work.** It is currently the half-diagonal
       of the measured lattice cell (~572 m in SF), which circumscribes the real
       uncertainty and so never understates — but the cell is only a *lower*
