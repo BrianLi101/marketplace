@@ -271,6 +271,20 @@ item — several of these are harder or easier than they look. Items marked
       guessed slugs failed. So the table must store place ids, and the picker
       stays as the slow path that discovers ids for anything not in it.
       (`docs/location.md` §5.)
+      **But a table is not a full substitute.** Facebook also keeps the exact
+      coordinate in *session state* and centres results on it: from one
+      unchanging URL, Inner Sunset and Bayview return 62% overlapping result
+      sets, against a **zero** noise floor — the same point returns identical
+      results even after a different point intervened. A slug reproduces the
+      city; it cannot reproduce the centring.
+- [ ] **Run the picker in the store the searches use.** Following from the
+      above: `MarketplacePlaceResolver` uses `.unauthed`, a fresh
+      non-persistent store per instance, while `DesktopFeedEngine` searches on
+      `.authed`. So the session state holding the coordinate is thrown away as
+      soon as the resolution ends, and the app keeps the city while discarding
+      the precision it just spent ~10 s obtaining. Worth deciding rather than
+      just doing: it would tie the coordinate to the signed-in session, where
+      today the resolution is anonymous.
 - [ ] **The drawn radius still needs work.** It is currently the half-diagonal
       of the measured lattice cell (~572 m in SF), which circumscribes the real
       uncertainty and so never understates — but the cell is only a *lower*

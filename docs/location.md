@@ -173,6 +173,50 @@ are exactly three of the five cities whose guessed slugs failed in §3. So:
 * a table for the fast path must therefore store **place ids**, and the picker
   is still needed to discover ids for anything not in it
 
+### …but the coordinate is still kept, off to the side (measured 2026-08-07)
+
+The city-level URL is not the whole story. Facebook **retains the exact
+coordinate in session state** and centres results on it, even though nothing in
+the URL says so.
+
+Same URL every time — `/marketplace/sanfrancisco/search/?query=desk` — varying
+only the coordinate fed to the picker beforehand:
+
+| comparison | overlap |
+|---|---|
+| A vs A′ — same point, back to back | **100%** (7 of 7) |
+| A vs A″ — same point, **after B intervened** | **100%** (7 of 7) |
+| A vs B — different point, same URL | 62% |
+| B vs A″ | 62% |
+
+A is Inner Sunset, B is Bayview: ~8 km apart, opposite sides of the city.
+
+The noise floor is **zero** — the same coordinate returns byte-identical result
+sets — so the 62% is not ranking churn. And A″ matters more than A′: repeating
+the first coordinate *after a different one had been applied* reproduced its
+result set exactly, which rules out the back-to-back match being a cached
+response. The only thing that varied is the coordinate, and the results vary
+with it.
+
+So there are two granularities, and they disagree:
+
+* **the place** — city-level, in the URL, shareable, and what a lookup table
+  could replace
+* **the centring** — the exact point, held in session state, invisible in the
+  URL, and *not* reproducible from a slug or a place id
+
+**This has a direct consequence for the app, currently unfixed.**
+`MarketplacePlaceResolver` runs on the `.unauthed` store, which is a *fresh
+non-persistent* store per instance, while `DesktopFeedEngine` searches on
+`.authed`. The session state carrying the coordinate is therefore discarded the
+moment the resolution finishes, and never reaches a search. The app gets the
+city and drops the precision it just paid ten seconds for.
+
+Fixing it means running the picker in the same store the searches use. That is
+a design decision rather than a bug fix: it would associate the coordinate with
+the signed-in session, where today the resolution is anonymous and touches
+nothing.
+
 One read is unreliable and is left in rather than quietly dropped: the
 Williamsburg row's pill still said "London", the place the trial reset from.
 The path had already changed to `/marketplace/nyc`, so the resolution worked

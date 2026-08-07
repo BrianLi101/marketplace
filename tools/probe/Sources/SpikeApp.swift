@@ -38,6 +38,7 @@ struct ContentView: View {
                 Button("Persist") { controller.startPersistenceProbe() }
                 Button("GeoFeed") { controller.startGeoFeedProbe() }
                 Button("Grain") { controller.startPlaceGranularityProbe() }
+                Button("Retain") { controller.startCoordinateRetentionProbe() }
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -368,6 +369,76 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func startPlaceGranularityProbe() { Task { await runPlaceGranularityProbe() } }
+
+    /// Does Facebook keep the coordinate we fed, even though the URL reduces to
+    /// a city slug?
+    ///
+    /// It could: the slug is what's *visible*, but the picker could equally
+    /// have stashed the exact point in session state and be centring results on
+    /// it. If so, two different points in the same city would return different
+    /// listings **from the same URL** — which is the whole test.
+    ///
+    /// The trap is that Facebook's ranking is not deterministic, so "the two
+    /// sets differ" proves nothing on its own. Hence a noise floor: the same
+    /// coordinate is run twice, and the A/A' overlap is what any real effect
+    /// has to beat. Without that control this probe cannot tell a retained
+    /// coordinate from ordinary result churn (checklist §1).
+    ///
+    /// Inner Sunset and Bayview are ~8 km apart and on opposite sides of the
+    /// city, so a 5 mi radius centred on one would visibly exclude the other.
+    func runCoordinateRetentionProbe() async {
+        webView.customUserAgent = Self.desktopUA
+        let search = "https://www.facebook.com/marketplace/sanfrancisco/search/?query=desk"
+
+        func trial(_ label: String, _ lat: Double, _ lon: Double) async -> String {
+            await load("https://www.facebook.com/marketplace/london/")
+            try? await Task.sleep(for: .seconds(7))
+            _ = await js("(function(){ window.__geoFeed = { lat: \(lat), lon: \(lon) }; return '1'; })()")
+            _ = await js(Self.openLocationDialogJS)
+            try? await Task.sleep(for: .seconds(3))
+            _ = await js(Self.clickGeoArrowJS)
+            try? await Task.sleep(for: .seconds(5))
+            _ = await js(Self.applyLocationJS)
+            try? await Task.sleep(for: .seconds(7))
+            // Same URL every time, so any difference has to come from state
+            // Facebook is holding rather than from what we asked for.
+            await load(search)
+            try? await Task.sleep(for: .seconds(9))
+            let ids = await js(Self.listingIDsJS)
+            emit("RETAIN[\(label)] \(ids.prefix(160))")
+            return ids
+        }
+
+        let a  = await trial("A innerSunset",  37.7625, -122.4745)
+        let a2 = await trial("A' innerSunset", 37.7625, -122.4745)
+        let b  = await trial("B bayview",      37.7249, -122.3894)
+        // A repeated *after* B is the one that settles it. A/A' being identical
+        // back-to-back could just be a cached response; if returning to the
+        // first coordinate reproduces its result set after a different one has
+        // intervened, the coordinate is doing the work.
+        let a3 = await trial("A'' innerSunset", 37.7625, -122.4745)
+
+        emit("RETAIN[overlap A/A' ] \(Self.overlap(a, a2))   <- noise floor, back to back")
+        emit("RETAIN[overlap A/B  ] \(Self.overlap(a, b))    <- different point, same URL")
+        emit("RETAIN[overlap A/A''] \(Self.overlap(a, a3))   <- same point, after B intervened")
+        emit("RETAIN[overlap B/A''] \(Self.overlap(b, a3))   <- should look like A/B if the point is kept")
+        emit("=== RETAINPROBE COMPLETE ===")
+    }
+
+    func startCoordinateRetentionProbe() { Task { await runCoordinateRetentionProbe() } }
+
+    /// Jaccard overlap of two id lists, as a percentage.
+    static func overlap(_ lhs: String, _ rhs: String) -> String {
+        func ids(_ json: String) -> Set<String> {
+            Set(json.components(separatedBy: CharacterSet(charactersIn: "[],\" "))
+                .filter { $0.count >= 8 && $0.allSatisfy(\.isNumber) })
+        }
+        let a = ids(lhs), b = ids(rhs)
+        guard !a.isEmpty, !b.isEmpty else { return "n/a (a=\(a.count) b=\(b.count))" }
+        let shared = a.intersection(b).count
+        let union = a.union(b).count
+        return "\(Int(Double(shared) / Double(union) * 100))% (\(shared) shared of \(union); a=\(a.count) b=\(b.count))"
+    }
 
     func runPickerProbe() async {
         webView.customUserAgent = Self.desktopUA
@@ -3560,6 +3631,23 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
       if (!apply) return JSON.stringify({ applied: false, reason: 'no Apply' });
       apply.click();
       return JSON.stringify({ applied: true });
+    })()
+    """
+
+    /// Listing ids in document order, plus the cities they sit in — enough to
+    /// compare two result sets for both membership and geographic spread.
+    static let listingIDsJS = """
+    (function(){
+      var ids = [], cities = {};
+      Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'))
+        .forEach(function(a){
+          var m = a.getAttribute('href').match(/\\/marketplace\\/item\\/(\\d+)/);
+          if (m && ids.indexOf(m[1]) < 0) ids.push(m[1]);
+          var c = (a.getAttribute('aria-label') || a.textContent || '')
+            .match(/([A-Za-z .'-]+,\\s*[A-Z]{2})\\b/);
+          if (c) cities[c[1]] = (cities[c[1]] || 0) + 1;
+        });
+      return JSON.stringify({ count: ids.length, ids: ids, cities: cities });
     })()
     """
 
