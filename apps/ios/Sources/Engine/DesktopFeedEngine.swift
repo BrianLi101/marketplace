@@ -50,10 +50,10 @@ final class DesktopFeedEngine: NSObject, ObservableObject, WKNavigationDelegate 
     private let pacer: RequestPacer
     private var navContinuation: CheckedContinuation<Void, Never>?
 
-    init(session: BrowserSession = .authed, pacer: RequestPacer = RequestPacer()) {
+    init(session: BrowserSession = .authed, pacer: RequestPacer = .shared) {
         self.session = session
         self.pacer = pacer
-        let config = WKWebViewConfiguration.make(session: session)
+        let config = WKWebViewConfiguration.make()
         webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 900),
                             configuration: config)
         super.init()

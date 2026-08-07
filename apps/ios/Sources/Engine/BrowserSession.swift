@@ -1,44 +1,49 @@
 import Foundation
 import WebKit
 
-/// The two web contexts the app runs, and the guarantee that they never mix.
+/// Which auth state a piece of data came from.
 ///
-/// `unauthed` keeps the original §7.1 promise — a non-persistent store that
-/// shares nothing with Safari, the Facebook app, or the signed-in context, and
-/// forgets everything when it goes away.
+/// **This is a label, not a sandbox.** It used to be both: `authed` and
+/// `unauthed` selected different `WKWebsiteDataStore`s that shared nothing, so
+/// anonymous browsing left no persistent trace. That split is gone, and it is
+/// worth being clear about why, because it was a deliberate design decision
+/// being reversed rather than a simplification.
 ///
-/// `authed` is the deliberate exception: a session has to survive relaunches or
-/// the user signs in on every cold start. That means Facebook gets a stable
-/// identity across launches for signed-in users, which is inherent to having a
-/// session at all rather than something the design can avoid.
+/// It was buying less than it looked. Every user-facing engine already
+/// defaulted to `.authed`, so all searching and detail-fetching ran on the
+/// persistent store whether or not anyone was signed in — `.authed` was simply
+/// "the store", empty of cookies when logged out. The isolation was real only
+/// for the one webview that used `.unauthed`, the place resolver.
 ///
-/// They are separate `WKWebsiteDataStore`s, so nothing crosses between them:
-/// not cookies, not local storage, not caches. That isolation is the feature.
-/// It keeps anonymous requests genuinely anonymous, keeps "logged out" testable
-/// while a session exists, and leaves room for the likely future split where
-/// anonymous users are served from the mobile stack and signed-in users from
-/// desktop.
+/// And there it was actively harmful. Facebook keeps the coordinate fed to its
+/// location picker in **session state**, not in the URL, and ranks results by
+/// proximity to it — two ends of Manhattan share ~36% of their results from a
+/// byte-identical URL (`docs/location.md` §5). Resolving in a throwaway store
+/// meant that state was discarded seconds after it was established, so the app
+/// paid ten seconds for a city slug and threw the precision away.
 ///
-/// See `docs/decision-desktop-primary.md`.
+/// What isolation bought was also weaker than it appeared: same IP, same
+/// device, same user agent. A separate cookie jar prevents cookie linkage, not
+/// identification.
+///
+/// The label survives because it does a second, unrelated job that is still
+/// worth doing: `ListingCache` refuses to serve results captured in one auth
+/// state to the other. Signed-in results carry seller identity and logged-out
+/// ones cannot, so serving one as the other would be a real bug.
+///
+/// See `docs/decision-desktop-primary.md` and `docs/location.md` §5.
 enum BrowserSession: String, CaseIterable, Codable, Sendable {
     case authed
     case unauthed
 
-    /// A persistent store for the signed-in context, a fresh one otherwise.
+    /// The one store. Process-wide and persistent, so a session obtained in the
+    /// visible login webview is usable by the engines afterwards — and so is
+    /// whatever server-side state Facebook associates with it.
     ///
-    /// `WKWebsiteDataStore.default()` is process-wide, so every `authed`
-    /// webview shares one cookie jar — which is what lets a session obtained in
-    /// a visible login webview be used by the engines afterwards. Each
-    /// `unauthed` call returns a *new* non-persistent store, so two anonymous
-    /// contexts cannot see each other either.
-    var dataStore: WKWebsiteDataStore {
-        switch self {
-        case .authed: return .default()
-        case .unauthed: return .nonPersistent()
-        }
-    }
-
-    var isPersistent: Bool { self == .authed }
+    /// Persistence is inherent to having a session at all: it has to survive
+    /// relaunches or the user signs in on every cold start. Everything the app
+    /// stores here is discarded by `SessionState.signOut()`.
+    static var dataStore: WKWebsiteDataStore { .default() }
 }
 
 /// Which Facebook surface a webview is pretending to be.
@@ -64,10 +69,14 @@ enum Surface: String, Codable, Sendable {
 }
 
 extension WKWebViewConfiguration {
-    /// Builds a configuration pinned to one session and one surface.
-    static func make(session: BrowserSession) -> WKWebViewConfiguration {
+    /// Builds a configuration on the app's single web store.
+    ///
+    /// Takes no session argument on purpose: there is one store now, and a
+    /// parameter that no longer changes anything is worse than none — it reads
+    /// like a choice being made.
+    static func make() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = session.dataStore
+        config.websiteDataStore = BrowserSession.dataStore
         config.allowsInlineMediaPlayback = true
         config.suppressesIncrementalRendering = false
         return config
@@ -85,19 +94,21 @@ enum SessionState {
     /// successful login. Both present is the cheapest reliable signal, and it
     /// needs no request of our own.
     static func isSignedIn() async -> Bool {
-        let cookies = await BrowserSession.authed.dataStore.httpCookieStore.allCookies()
+        let cookies = await BrowserSession.dataStore.httpCookieStore.allCookies()
         let facebook = cookies.filter { $0.domain.contains("facebook.com") }
         return facebook.contains { $0.name == "c_user" }
             && facebook.contains { $0.name == "xs" }
     }
 
-    /// Signs out by discarding the persistent store's contents.
+    /// Signs out by discarding the store's contents.
     ///
-    /// Everything the signed-in context ever stored lives here, so this is the
-    /// whole of "log out" — there is no server call to make, and the unauthed
-    /// context is untouched because it is a different store.
+    /// Everything the app ever stored lives here, so this is the whole of "log
+    /// out" and there is no server call to make. Now that there is only one
+    /// store, this also clears anonymous browsing state and whatever location
+    /// the picker established — which is the right behaviour, since neither
+    /// should outlive the session it was set in.
     static func signOut() async {
-        let store = BrowserSession.authed.dataStore
+        let store = BrowserSession.dataStore
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         await store.removeData(ofTypes: types, modifiedSince: .distantPast)
     }

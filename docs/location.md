@@ -436,14 +436,16 @@ it calls* the place containing that point.
 
 ## 11. Open questions
 
-* **The app throws the coordinate away.** `MarketplacePlaceResolver` runs on
-  `.unauthed`, a fresh non-persistent store per instance; `DesktopFeedEngine`
-  searches on `.authed`. The session state holding the point is discarded when
-  the resolver's webview goes, so searches get city-level ranking and the ten
-  seconds spent resolving buys only the slug. Fixing it means running the
-  picker in the store the searches use — a decision, not a bug fix, since it
-  ties the coordinate to the signed-in session where today the resolution is
-  anonymous.
+* ~~The app throws the coordinate away.~~ **Fixed 2026-08-07.** The resolver
+  used to run on a throwaway non-persistent store while searches ran on the
+  persistent one, so the session state holding the point was discarded seconds
+  after it was established. There is now a single store (`BrowserSession` is a
+  cache label, not a sandbox), so the resolution and the searches share it.
+  The trade was made knowingly: for a signed-in user the coordinate is now
+  associated with their Facebook session rather than an anonymous one.
+  **Not yet measured end to end** — the ranking effect was proven in the probe
+  and the store change makes it reachable, but no A/B has been run through the
+  app itself.
 * Does the radius do anything? Unknown, and untested because the control is not
   a native `<select>` — it renders as a div reading "Radius 5 miles", so the
   probe couldn't set it and every run used the default 5 mi. A 1 mi radius

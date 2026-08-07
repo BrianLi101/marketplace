@@ -104,7 +104,7 @@ final class SignInModel: ObservableObject {
         // The mobile user agent, deliberately: Facebook's desktop login form is
         // unusable at phone width. The cookie jar is shared across user agents,
         // so the desktop engines pick the session up afterwards.
-        let config = WKWebViewConfiguration.make(session: .authed)
+        let config = WKWebViewConfiguration.make()
         webView = WKWebView(frame: .zero, configuration: config)
         webView.customUserAgent = Surface.mobile.userAgent
     }

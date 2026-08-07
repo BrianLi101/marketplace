@@ -54,11 +54,11 @@ final class DetailEngine: NSObject, ObservableObject, WKNavigationDelegate {
     /// page has no seller data to render.
     init(session: BrowserSession = .authed,
          metrics: MetricsReporter = LocalMetrics.shared,
-         pacer: RequestPacer = RequestPacer()) {
+         pacer: RequestPacer = .shared) {
         self.session = session
         self.metrics = metrics
         self.pacer = pacer
-        let config = WKWebViewConfiguration.make(session: session)
+        let config = WKWebViewConfiguration.make()
         webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1024, height: 900), configuration: config)
         super.init()
         webView.navigationDelegate = self

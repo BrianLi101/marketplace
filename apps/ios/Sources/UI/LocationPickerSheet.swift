@@ -174,6 +174,7 @@ struct LocationPickerSheet: View {
             case .noArrow: "Facebook's location dialog didn't offer the current-location button."
             case .notAsked: "Facebook didn't ask for a position."
             case .unresolved: "Facebook didn't recognise that place."
+            case .paced: "Too many requests just now. Try again shortly."
             case .notConfirmed(let shown):
                 if let shown {
                     "Facebook set the location but then served \(shown) instead. Not saved."

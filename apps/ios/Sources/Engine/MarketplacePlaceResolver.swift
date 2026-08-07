@@ -19,9 +19,19 @@ extension Logger {
 ///   (`AppleMapsCitySearch`), so the user can pick anywhere at all rather than
 ///   from a list somebody curated.
 ///
-/// Runs in its own throwaway webview on the **unauthed** store, so resolving a
-/// place never touches the signed-in session, and nothing about it persists
-/// beyond the `ResolvedPlace` returned.
+/// Runs on the app's shared store, **deliberately**, and this is the whole
+/// reason it works.
+///
+/// It used to use a throwaway non-persistent store so the resolution touched
+/// nothing. That looked tidy and quietly threw away most of what the ten-second
+/// round-trip bought: Facebook keeps the fed coordinate in *session state* and
+/// ranks results by proximity to it, so a resolution performed in a store that
+/// is then discarded leaves the searches with a city slug and nothing else
+/// (`docs/location.md` §5).
+///
+/// The cost is real and was accepted knowingly: for a signed-in user, the
+/// coordinate is now associated with their Facebook session rather than an
+/// anonymous one.
 @MainActor
 final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
     enum Failure: Error, Equatable {
@@ -37,13 +47,18 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         /// naming that place. The characteristic failure of this whole area:
         /// the results look fine and are for somewhere else.
         case notConfirmed(shown: String?)
+        /// The pacer refused the request — a backoff is in progress, or the
+        /// session cap is spent. Nothing was changed.
+        case paced
     }
 
     private let webView: WKWebView
     private var navContinuation: CheckedContinuation<Void, Never>?
+    private let pacer: RequestPacer
 
-    override init() {
-        let config = WKWebViewConfiguration.make(session: .unauthed)
+    init(pacer: RequestPacer = .shared) {
+        self.pacer = pacer
+        let config = WKWebViewConfiguration.make()
         config.userContentController.addUserScript(
             WKUserScript(source: GeoPickerScripts.feeder,
                          injectionTime: .atDocumentStart,
@@ -70,7 +85,9 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
             Logger.place.info("timing \(stage, privacy: .public) +\(ms, privacy: .public)ms")
         }
 
-        await navigate(to: URL(string: "https://www.facebook.com/marketplace/")!)
+        guard await navigate(to: URL(string: "https://www.facebook.com/marketplace/")!) else {
+            return .failure(.paced)
+        }
         mark("loaded")
 
         _ = await js(GeoPickerScripts.arm(latitude: coordinate.latitude,
@@ -145,7 +162,7 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         guard let target = place.browseURL.flatMap(URL.init(string:)) else {
             return .failure(.unresolved)
         }
-        await navigate(to: target)
+        guard await navigate(to: target) else { return .failure(.paced) }
         // The pill renders after the payload — measured at up to ~2.5 s — so a
         // single read here would report "no pill" for a page that has one.
         _ = await waitFor(GeoPickerScripts.pillPresent, timeout: .seconds(8))
@@ -214,11 +231,26 @@ final class MarketplacePlaceResolver: NSObject, WKNavigationDelegate {
         return (result as? String) ?? ""
     }
 
-    private func navigate(to url: URL) async {
+    /// Paced like every other request the app makes.
+    ///
+    /// A resolution is two page loads, and they used to go out entirely outside
+    /// the pacer — invisible to the session cap and, worse, to the backoff
+    /// ladder. Now that these requests carry the user's session they are the
+    /// last ones that should be exempt.
+    ///
+    /// Returns false when the pacer refuses, which surfaces as a resolution
+    /// failure rather than a silent partial run.
+    @discardableResult
+    private func navigate(to url: URL) async -> Bool {
+        guard await pacer.waitForSlot() else {
+            Logger.place.error("navigate: paced out")
+            return false
+        }
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             navContinuation = cont
             webView.load(URLRequest(url: url))
         }
+        return true
     }
 
     nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

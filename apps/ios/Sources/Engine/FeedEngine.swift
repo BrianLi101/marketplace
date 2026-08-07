@@ -48,7 +48,7 @@ final class FeedEngine: NSObject, ObservableObject, WKNavigationDelegate {
         "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 " +
         "(KHTML, like Gecko) Version/18.7 Mobile/15E148 Safari/604.1"
 
-    init(metrics: MetricsReporter = LocalMetrics.shared, pacer: RequestPacer = RequestPacer()) {
+    init(metrics: MetricsReporter = LocalMetrics.shared, pacer: RequestPacer = .shared) {
         self.metrics = metrics
         self.pacer = pacer
 
