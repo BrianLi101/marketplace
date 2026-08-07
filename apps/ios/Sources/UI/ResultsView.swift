@@ -209,7 +209,14 @@ struct ResultsView: View {
         case .loginWall:
             LoginWallCard { Task { await store.retry() } }
                 .padding()
-        case .failed(let message):
+        // A failure replaces the screen only when there is nothing to replace.
+        //
+        // Engine state and collected results are separate facts, and they can
+        // disagree — a load can fail after cards were restored from cache, or
+        // after a partial read. Letting the state win meant an error banner
+        // drawn over listings the app was holding, which reads as "broken" when
+        // the honest report is "here is what I have, and something went wrong".
+        case .failed(let message) where store.listings.isEmpty:
             InlineNotice(text: message, actionTitle: "Try again") { Task { await store.retry() } }
                 .padding()
         default:

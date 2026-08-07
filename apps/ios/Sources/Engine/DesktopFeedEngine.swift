@@ -119,15 +119,28 @@ final class DesktopFeedEngine: NSObject, ObservableObject, WKNavigationDelegate 
             try? await Task.sleep(for: .milliseconds(150))
         }
 
-        // Cards on screen but no payload parsed is the signature of a broken
-        // extractor, not an empty result — worth saying so plainly rather than
-        // returning [] and letting it look like "nothing found".
+        // Cards on screen but no payload parsed used to be reported to the user
+        // as "Couldn't read these results." That was wrong twice over.
+        //
+        // It isn't a failure: the caller reads the rendered cards from the DOM
+        // straight afterwards (`ListingStore.search` → `renderedCards()`), and
+        // those parse fine from their aria-labels. The listings arrive; only
+        // the richer fields — timestamps, delivery types, price drops — don't.
+        // Declaring `.failed` meant `ResultsView` drew an error over a result
+        // set the app had successfully collected.
+        //
+        // And it isn't necessarily *suspicious*. Facebook does not always embed
+        // the payload; a page served entirely client-side renders cards with no
+        // `"listing":{` block anywhere in the document. Same signature as a
+        // broken extractor, different cause, and only one of them is a bug.
+        //
+        // So it degrades rather than fails, and says so in the log where the
+        // coverage numbers are — a real extractor break shows up there as this
+        // line on *every* search rather than an occasional one.
         if coverage.isSuspicious {
-            Logger.desktop.error("\(self.coverage.rendered) cards rendered but no payload parsed")
-            state = .failed("Couldn't read these results.")
-        } else {
-            state = .ready
+            Logger.desktop.error("degraded: \(self.coverage.rendered) cards rendered, no payload — falling back to markup")
         }
+        state = .ready
         return last
     }
 
