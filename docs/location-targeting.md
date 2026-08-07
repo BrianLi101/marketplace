@@ -148,9 +148,35 @@ problem arises. Two open questions become one mechanism: feed the device's real
 fix to browse where the user actually is, or geocode a typed city name to a
 coordinate and feed that to browse anywhere else.
 
-Unverified so far: whether this behaves the same inside the app's `WKWebView`
-(measured in the desktop-UA browser pane), and whether `radius_in_km` from this
-route is honoured or decorative like every other radius control (§3).
+### 5b. Confirmed in `WKWebView` — the app's own engine
+
+Run with the `GeoFeed` probe, desktop UA, logged out. WKWebView has never
+really shipped Geolocation, so the app doesn't rely on it: a documentStart user
+script *replaces* `navigator.geolocation` with one that answers from
+`window.__geoFeed`. The web view therefore needs no location permission of its
+own, and Facebook can only ever receive a coordinate the app decided to hand
+over.
+
+| check | result |
+|---|---|
+| `navigator.geolocation` exists in WKWebView | yes (`geoWasMissing: false`) — the shim overwrites rather than defines |
+| shim installed, positive control | `hooked: true`, `sawOwnCall: true` |
+| Facebook calls it when the arrow is clicked | yes — `__geoFedCalls` 1 → 2 |
+| fed London (51.5074, −0.1278) | → Apply → `/marketplace/london`, pill **"London · 8 km"**, UK listings |
+
+The session was on **Toronto** when the run started (persistent store, left by
+the picker probe) and the IP is **San Francisco**, so London can be neither
+leftover state nor IP inference.
+
+A false pass nearly happened here and is worth recording: the first run fed
+*Toronto* into a session already showing Toronto. It failed for an unrelated
+reason — the pill reads "Toronto · 8 km" and the selector only matched `mi` —
+but had the click worked, the result would have been indistinguishable from
+doing nothing (checklist §3: a probe whose expected output equals the starting
+state measures nothing).
+
+Still unverified: whether `radius_in_km` from this route is honoured or
+decorative like every other radius control (§3).
 
 ## 6. Place ids work, and every search hands them over
 

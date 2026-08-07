@@ -36,6 +36,7 @@ struct ContentView: View {
                 Button("Slugs") { controller.startSlugSurvey() }
                 Button("Picker") { controller.startPickerProbe() }
                 Button("Persist") { controller.startPersistenceProbe() }
+                Button("GeoFeed") { controller.startGeoFeedProbe() }
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -111,6 +112,19 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
         // we were watching".
         config.userContentController.addUserScript(
             WKUserScript(source: Self.geoRecorderJS,
+                         injectionTime: .atDocumentStart,
+                         forMainFrameOnly: false)
+        )
+        // §5a said the picker's centring arrow accepts any coordinate — in a
+        // desktop browser. The app runs `WKWebView`, which has never supported
+        // the Geolocation API properly, so the question here isn't "will the
+        // user grant permission" but "does the API even exist to be called".
+        // This sidesteps both: it *replaces* the API with one that answers with
+        // whatever `__geoFeed` holds, so the web view needs no location
+        // permission of its own and Facebook can only ever receive a
+        // coordinate the app chose to give it.
+        config.userContentController.addUserScript(
+            WKUserScript(source: Self.geoFeederJS,
                          injectionTime: .atDocumentStart,
                          forMainFrameOnly: false)
         )
@@ -244,6 +258,57 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     ///
     /// Synthetic clicks do work on this site (`filter-parameters.md` §4
     /// correction), so the picker is worth trying rather than assuming.
+    /// Does §5a's coordinate route survive in `WKWebView`?
+    ///
+    /// Three things could differ from the desktop browser it was measured in:
+    /// the API may not exist at all (WKWebView has never really shipped
+    /// Geolocation), Facebook may feature-detect and hide the arrow, and the
+    /// resolution may be done somewhere that behaves differently for a
+    /// logged-out mobile-ish session.
+    ///
+    /// Feeds **London** — which is neither the IP city (San Francisco) nor
+    /// whatever the persistent store is already set to from an earlier probe
+    /// run. A result of "London" therefore can't be the IP talking, and can't
+    /// be leftover state either. The first run of this probe fed Toronto and
+    /// the web view was *already* on Toronto from the picker probe, which
+    /// would have made a failure look like a pass.
+    func runGeoFeedProbe() async {
+        webView.customUserAgent = Self.desktopUA
+
+        await load("https://www.facebook.com/marketplace/")
+        try? await Task.sleep(for: .seconds(9))
+
+        // Positive control first: prove the shim is installed and reachable,
+        // or "Facebook never called it" and "we never hooked it" look alike.
+        emit("GEOFEED[control] \(await js("""
+        (function(){
+          window.__geoFeed = { lat: 51.5074, lon: -0.1278 };   // London
+          var before = window.__geoFedCalls;
+          var got = null;
+          navigator.geolocation.getCurrentPosition(function(p){ got = p.coords.latitude; });
+          return JSON.stringify({ hooked: !!window.__geoFedHooked,
+                                  geoWasMissing: window.__geoWasMissing,
+                                  sawOwnCall: window.__geoFedCalls > before,
+                                  startedAt: (document.body.innerText.match(/\\n([A-Za-z ]+)\\s*·\\s*\\d+\\s*(mi|km)/) || [])[1] || null });
+        })()
+        """))")
+
+        emit("GEOFEED[open] \(await js(Self.openLocationDialogJS))")
+        try? await Task.sleep(for: .seconds(4))
+
+        emit("GEOFEED[arrow] \(await js(Self.clickGeoArrowJS))")
+        try? await Task.sleep(for: .seconds(5))
+        emit("GEOFEED[field] \(await js(Self.pickerFieldJS))")
+
+        emit("GEOFEED[apply] \(await js(Self.applyLocationJS))")
+        try? await Task.sleep(for: .seconds(9))
+        emit("GEOFEED[result] \(await js(Self.resultCitiesJS))")
+
+        emit("=== GEOFEEDPROBE COMPLETE ===")
+    }
+
+    func startGeoFeedProbe() { Task { await runGeoFeedProbe() } }
+
     func runPickerProbe() async {
         webView.customUserAgent = Self.desktopUA
         let query = "?query=desk"
@@ -3336,6 +3401,120 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     """
 
     /// Records every request the page makes for the device's position.
+    /// Replaces `navigator.geolocation` with one that answers from
+    /// `window.__geoFeed`, set from Swift before the arrow is clicked.
+    ///
+    /// Defines the object outright when WKWebView doesn't provide one, so the
+    /// page's feature detection sees a working API either way.
+    static let geoFeederJS = """
+    (function(){
+      if (window.__geoFedHooked) return;
+      window.__geoFedHooked = true;
+      window.__geoFeed = null;
+      window.__geoFedCalls = 0;
+      function position() {
+        return {
+          coords: {
+            latitude: window.__geoFeed.lat, longitude: window.__geoFeed.lon,
+            accuracy: 20, altitude: null, altitudeAccuracy: null,
+            heading: null, speed: null
+          },
+          timestamp: Date.now()
+        };
+      }
+      function getCurrentPosition(ok, err) {
+        window.__geoFedCalls++;
+        if (!window.__geoFeed) { if (err) err({ code: 2, message: 'no fix set' }); return; }
+        setTimeout(function(){ ok(position()); }, 0);
+      }
+      function watchPosition(ok, err) { getCurrentPosition(ok, err); return 1; }
+      var impl = { getCurrentPosition: getCurrentPosition,
+                   watchPosition: watchPosition,
+                   clearWatch: function(){} };
+      var g = navigator.geolocation;
+      if (!g) {
+        window.__geoWasMissing = true;
+        Object.defineProperty(navigator, 'geolocation', { value: impl, configurable: true });
+      } else {
+        window.__geoWasMissing = false;
+        Object.defineProperty(g, 'getCurrentPosition', { value: getCurrentPosition, writable: true, configurable: true });
+        Object.defineProperty(g, 'watchPosition', { value: watchPosition, writable: true, configurable: true });
+      }
+    })();
+    """
+
+    /// Opens the location dialog from the header pill.
+    static let openLocationDialogJS = """
+    (function(){
+      // Units follow the place, not the viewer — a Canadian location renders
+      // "Toronto · 8 km". Matching only "mi" made a working pill invisible.
+      var btn = Array.prototype.slice.call(document.querySelectorAll('div[role="button"]'))
+        .filter(function(e){ var t = (e.textContent||'').trim();
+                             return /·\\s*\\d+\\s*(mi|km)/i.test(t) && t.length < 80; })[0];
+      if (!btn) {
+        var all = Array.prototype.slice.call(document.querySelectorAll('div[role="button"]'))
+          .map(function(e){ return (e.textContent||'').trim().slice(0,40); })
+          .filter(function(t){ return t.length > 2; }).slice(0, 10);
+        return JSON.stringify({ opened: false, reason: 'pill not found', sawButtons: all });
+      }
+      btn.click();
+      return JSON.stringify({ opened: true, pill: btn.textContent.trim() });
+    })()
+    """
+
+    /// Clicks the centring arrow after arming the feed. Reports whether the
+    /// control existed at all, which is the first thing that could differ
+    /// between a desktop browser and WKWebView.
+    static let clickGeoArrowJS = """
+    (function(){
+      var arrow = document.querySelector('[aria-label="Marketplace geolocation picker"]');
+      if (!arrow) return JSON.stringify({ clicked: false, reason: 'arrow absent',
+                                          geoMissing: window.__geoWasMissing });
+      var before = window.__geoFedCalls;
+      arrow.click();
+      return JSON.stringify({ clicked: true, callsBefore: before,
+                              callsAfter: window.__geoFedCalls,
+                              geoMissing: window.__geoWasMissing });
+    })()
+    """
+
+    /// What the dialog resolved the coordinate to, before Apply.
+    static let pickerFieldJS = """
+    (function(){
+      var labels = Array.prototype.slice.call(document.querySelectorAll('label,div'))
+        .filter(function(e){ return /^Location/.test((e.textContent||'').trim()); });
+      var inputs = Array.prototype.slice.call(document.querySelectorAll('input'))
+        .map(function(i){ return { value: i.value, placeholder: i.placeholder, label: i.getAttribute('aria-label') }; })
+        .filter(function(i){ return i.value || i.placeholder; });
+      var field = labels.length ? labels[labels.length-1].textContent.trim().slice(0, 80) : null;
+      return JSON.stringify({ field: field, inputs: inputs.slice(0, 4), url: location.href });
+    })()
+    """
+
+    /// Applies the resolved place and reports what actually changed — the URL
+    /// is the thing the app would have to persist.
+    static let applyLocationJS = """
+    (function(){
+      var apply = document.querySelector('[aria-label="Apply"]');
+      if (!apply) return JSON.stringify({ applied: false, reason: 'no Apply' });
+      apply.click();
+      return JSON.stringify({ applied: true });
+    })()
+    """
+
+    /// Where the listings ended up, read off the cards rather than the header.
+    static let resultCitiesJS = """
+    (function(){
+      var cities = {};
+      Array.prototype.slice.call(document.querySelectorAll('a[href*="/marketplace/item/"]'))
+        .forEach(function(a){
+          var m = (a.getAttribute('aria-label') || a.textContent || '').match(/([A-Za-z .'-]+,\\s*[A-Z]{2})\\b/);
+          if (m) cities[m[1]] = (cities[m[1]] || 0) + 1;
+        });
+      return JSON.stringify({ url: location.href, cities: cities });
+    })()
+    """
+
     static let geoRecorderJS = """
     (function(){
       if (window.__geoHooked) return;
