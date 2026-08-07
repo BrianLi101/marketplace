@@ -61,6 +61,7 @@ struct FilterSheet: View {
     @State private var original: FilterSnapshot?
     @State private var minPriceText = ""
     @State private var maxPriceText = ""
+    @State private var showLocationPicker = false
 
     /// What a change to any of these costs: a fresh search.
     ///
@@ -105,6 +106,7 @@ struct FilterSheet: View {
             }
             .navigationTitle("Filters")
             .navigationBarTitleDisplayMode(.inline)
+            .sheet(isPresented: $showLocationPicker) { LocationPickerSheet() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { dismiss() } label: { Image(systemName: "xmark") }
@@ -170,27 +172,19 @@ struct FilterSheet: View {
         }
     }
 
+    /// Opens the picker rather than listing cities inline.
+    ///
+    /// There is no list any more: any place Apple can find is a place this can
+    /// browse, because Facebook does the naming (`LocationPickerSheet`).
     private var locationControl: some View {
-        Menu {
-            ForEach(MarketplaceCity.common) { city in
-                Button {
-                    prefs.locationSlug = city.slug
-                    prefs.locationName = city.name
-                } label: {
-                    if city.slug == prefs.locationSlug {
-                        Label(city.name, systemImage: "checkmark")
-                    } else {
-                        Text(city.name)
-                    }
-                }
-            }
+        Button {
+            showLocationPicker = true
         } label: {
             HStack {
                 Image(systemName: "mappin.and.ellipse")
-                Text(MarketplaceCity.named(prefs.locationSlug)?.name
-                     ?? prefs.locationName ?? "San Francisco")
+                Text(prefs.locationName ?? "Choose a location")
                 Spacer()
-                Image(systemName: "chevron.up.chevron.down").font(.caption)
+                Image(systemName: "chevron.right").font(.caption)
             }
             .font(.subheadline)
             .padding(.horizontal, 14)

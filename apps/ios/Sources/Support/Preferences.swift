@@ -21,6 +21,7 @@ final class Preferences: ObservableObject {
         static let maxPrice = "maxPrice"
         static let conditions = "itemConditions"
         static let hideViewed = "hideViewed"
+        static let resolvedPlace = "resolvedPlace"
     }
 
     private let defaults: UserDefaults
@@ -32,6 +33,24 @@ final class Preferences: ObservableObject {
     @Published var locationName: String? { didSet { defaults.set(locationName, forKey: Key.locationName) } }
     /// Facebook's city slug used in the search path ("sanfrancisco").
     @Published var locationSlug: String? { didSet { defaults.set(locationSlug, forKey: Key.locationSlug) } }
+    /// The place Facebook resolved, and the coordinate that produced it.
+    ///
+    /// The record of *how* the current location was arrived at. `locationSlug`
+    /// and `locationName` remain the things the query and the UI read, so
+    /// nothing downstream has to know this exists — `setResolvedPlace` keeps
+    /// all three in step, and is the only writer of a slug in the app.
+    @Published private(set) var resolvedPlace: ResolvedPlace? {
+        didSet {
+            defaults.set(resolvedPlace.flatMap { try? JSONEncoder().encode($0) },
+                         forKey: Key.resolvedPlace)
+        }
+    }
+
+    func setResolvedPlace(_ place: ResolvedPlace) {
+        resolvedPlace = place
+        locationSlug = place.segment
+        locationName = place.name
+    }
     /// The last thing the user looked at, so reopening the app lands them back
     /// there instead of on an empty screen.
     @Published private(set) var lastQueryKind: String? { didSet { defaults.set(lastQueryKind, forKey: Key.lastQueryKind) } }
@@ -93,19 +112,19 @@ final class Preferences: ObservableObject {
                 ?? Self.defaultRadiusKM
         hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
         locationName = defaults.string(forKey: Key.locationName)
-        // Drop a stored slug that is no longer offered. Five of the cities this
-        // app used to list are not places Facebook recognises, and a rejected
-        // slug doesn't fail — it silently serves the IP-inferred city
-        // (`docs/location-targeting.md` §1). Removing them from the picker left
-        // anyone who had one selected still sending it on every search, with
-        // the sheet now showing a *different* city than the one being queried.
-        let storedSlug = defaults.string(forKey: Key.locationSlug)
-        if let storedSlug, MarketplaceCity.named(storedSlug) == nil {
-            locationSlug = nil
-            locationName = nil
-        } else {
-            locationSlug = storedSlug
-        }
+        // Kept as-is, with no validation against a curated list any more.
+        //
+        // That check existed because the app used to *guess* slugs, and five of
+        // the twelve it shipped were not places Facebook recognises — a
+        // rejected slug doesn't fail, it silently serves the IP-inferred city
+        // (`docs/location-targeting.md` §1). Slugs now come back from
+        // Facebook's own picker (`MarketplacePlaceResolver`), so they are valid
+        // by construction, and a whitelist would do nothing but delete
+        // perfectly good ones the moment a user picked a city nobody thought
+        // to curate.
+        locationSlug = defaults.string(forKey: Key.locationSlug)
+        resolvedPlace = (defaults.data(forKey: Key.resolvedPlace))
+            .flatMap { try? JSONDecoder().decode(ResolvedPlace.self, from: $0) }
         lastQueryKind = defaults.string(forKey: Key.lastQueryKind)
         lastQueryValue = defaults.string(forKey: Key.lastQueryValue)
         sort = defaults.string(forKey: Key.sortBy)

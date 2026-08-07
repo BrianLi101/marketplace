@@ -41,6 +41,24 @@ final class DistanceResolver: ObservableObject {
         userLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
     }
 
+    /// Where distances should be measured *from*, which is not always the
+    /// device.
+    ///
+    /// Browsing another city breaks the assumption that "the user" and "the
+    /// search" are in the same place. Measured from a San Francisco fix, every
+    /// Toronto listing reads "~2273 mi" and the radius filter hides the entire
+    /// result set — technically true and completely useless, since the question
+    /// a distance answers here is "how far across *this* city", not "how far
+    /// from my house".
+    ///
+    /// So a deliberately-chosen city measures from that city, and the device
+    /// fix is used whenever the search is where the user actually is.
+    static func origin(for place: ResolvedPlace?,
+                       deviceFix: CLLocationCoordinate2D?) -> CLLocationCoordinate2D? {
+        if let place, place.origin == .searchedCity { return place.coordinate }
+        return deviceFix
+    }
+
     /// The geocoded centre of a place name, once resolved. This is a city or
     /// neighbourhood centroid, never the listing itself — Facebook only ever
     /// says "Location is approximate".

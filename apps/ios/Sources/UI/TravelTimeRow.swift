@@ -32,7 +32,7 @@ struct TravelTimeRow: View {
 
     @ViewBuilder
     var body: some View {
-        if precision == .listing {
+        if precision == .listing, isWorthRouting {
             if let origin = location.coordinate {
                 estimates(from: origin)
             } else if location.isUndecided {
@@ -87,6 +87,23 @@ struct TravelTimeRow: View {
         // within the freshness window reuses the answer rather than
         // re-requesting it.
         .task(id: trigger) { await run(from: origin) }
+    }
+
+    /// Travel time is always measured from the device, because it answers "how
+    /// long would it take *me* to go and get this" — the one question where
+    /// the user's real position is the only honest origin, even when they're
+    /// browsing another city.
+    ///
+    /// Which is exactly why it has to stop somewhere. Browsing Toronto from San
+    /// Francisco, the drive is a two-day answer to a question nobody asked, and
+    /// the transit leg is a flight MapKit won't route anyway. A hundred miles
+    /// is past any "go and collect it" trip and well short of a normal
+    /// metro-area search.
+    private var isWorthRouting: Bool {
+        guard let origin = location.coordinate else { return true }   // nothing to judge yet
+        let metres = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+            .distance(from: CLLocation(latitude: origin.latitude, longitude: origin.longitude))
+        return metres < 160_000
     }
 
     private func run(from origin: CLLocationCoordinate2D) async {

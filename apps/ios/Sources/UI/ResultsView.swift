@@ -98,7 +98,7 @@ struct ResultsView: View {
             // The fix can land long after a search starts; hand it straight to
             // the distance resolver whenever it does.
             .onChange(of: location.coordinate?.latitude) {
-                distances.setUserLocation(location.coordinate)
+                distances.setUserLocation(DistanceResolver.origin(for: prefs.resolvedPlace, deviceFix: location.coordinate))
             }
             // Emptying the search bar goes home, to the saved list — but Cancel
             // empties it too, and cancelling a search field should not throw
@@ -133,7 +133,7 @@ struct ResultsView: View {
                 }
             }
             .task {
-                distances.setUserLocation(location.coordinate)
+                distances.setUserLocation(DistanceResolver.origin(for: prefs.resolvedPlace, deviceFix: location.coordinate))
             }
         }
     }
@@ -457,10 +457,11 @@ struct ResultsView: View {
         if location.coordinate == nil {
             Task {
                 let coordinate = await location.resolveOnce()
-                distances.setUserLocation(coordinate)
+                distances.setUserLocation(DistanceResolver.origin(for: prefs.resolvedPlace,
+                                                                  deviceFix: coordinate))
             }
         } else {
-            distances.setUserLocation(location.coordinate)
+            distances.setUserLocation(DistanceResolver.origin(for: prefs.resolvedPlace, deviceFix: location.coordinate))
         }
         return SearchQuery(
             kind: kind,

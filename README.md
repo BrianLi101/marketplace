@@ -281,8 +281,15 @@ item — several of these are harder or easier than they look. Items marked
       somewhere else entirely (`richmond` → Richmond, *Virginia*). Both return a
       full, healthy-looking result set for the wrong city, so the path segment
       and the dominant returned city both have to be checked.
-- [ ] **Feed a coordinate to the picker's centring arrow — this is probably the
-      answer to both location problems.** `latitude`/`longitude` as *URL
+- [x] **Feed a coordinate to the picker's centring arrow — the answer to both
+      location problems.** Shipped: `MarketplacePlaceResolver` +
+      `LocationPickerSheet`. "Use my current location" resolved the device fix
+      to `San Francisco [sanfrancisco]`; searching "Toronto" in Apple's
+      completer (which disambiguates Toronto ON / NSW / OH, something a guessed
+      slug never could) resolved to `Toronto [toronto]` and searches came back
+      in CA$ from Toronto and Kawartha Lakes. The curated seven-city list and
+      the slug whitelist are both gone, along with the reverse-geocode that
+      used to overwrite a chosen city with a guessed slug. Detail below. `latitude`/`longitude` as *URL
       parameters* are ignored (San Diego pair against a San Francisco IP →
       San Francisco ×15), and Facebook never reaches for the browser's location
       on its own during load or search. But the "Change location" dialog has a

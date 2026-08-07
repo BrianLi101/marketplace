@@ -112,10 +112,17 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
         }
         let name = [city, place.administrativeArea].compactMap { $0 }.joined(separator: ", ")
         state = .resolved(name)
-        let prefs = Preferences.shared
-        prefs.locationName = name
-        prefs.locationSlug = city.lowercased()
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: ".", with: "")
+        // Deliberately writes **no slug**.
+        //
+        // It used to write `city.lowercased()` with spaces stripped, which is
+        // precisely the guessing that doesn't work — "Daly City" → `dalycity`
+        // is not a place Facebook knows, and the search silently ran against
+        // the IP-inferred city instead. Worse, it fired on every fix, so it
+        // also overwrote whichever city the user had deliberately chosen.
+        //
+        // Targeting is now `MarketplacePlaceResolver`'s job and nothing else's:
+        // the user asks for their location, Facebook names the place, and the
+        // slug that comes back is one Facebook recognises. This is only a
+        // display name.
     }
 }
