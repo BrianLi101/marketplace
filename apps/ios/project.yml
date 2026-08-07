@@ -14,7 +14,7 @@ targets:
         PRODUCT_NAME: Marketplace
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Used once to centre your search on your area. Your location never leaves your device."
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Used to centre your search on your area, and to estimate how long it takes to reach a listing. Your location never leaves your device."
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         TARGETED_DEVICE_FAMILY: "1"
         CODE_SIGNING_ALLOWED: "NO"

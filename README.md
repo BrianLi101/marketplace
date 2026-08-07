@@ -87,11 +87,13 @@ card-level distance still has to come from geocoding the city name.
 
 That point is also what the detail screen routes against: `MapKitTravelTime`
 asks Apple for a walking, driving and transit ETA from the device's own fix
-(`MKDirections.calculateETA`). It fires once the destination has *settled* —
-immediately for a listing already in the cache, and on enrichment for a cold
-one — rather than routing to the city centroid and then again to the listing,
-which would spend six requests against a rate-limited service that answers
-`MKError.loadingThrottled` when leaned on. Transit is ETA-only by
+(`MKDirections.calculateETA`). **Both ends have to be real or the row doesn't
+draw**: the destination must be the listing's own point, never a city centroid
+— routing to the middle of San Francisco from the Inner Sunset returns a
+confident "8 min walk" for something an hour away, and a travel time reads as a
+plan in a way a fuzzy distance doesn't — and the origin must be a live device
+fix, since the chosen search city says which listings come back, not where the
+user is. With no fix, an inline prompt offers one. Transit is ETA-only by
 design: the SDK marks `MKDirectionsTransportType.transit` as "Only supported for
 ETA calculations", which is exactly the question being asked. The row is hidden
 outright without a live fix, since the chosen search city says which listings

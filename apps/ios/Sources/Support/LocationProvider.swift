@@ -19,11 +19,28 @@ final class LocationProvider: NSObject, ObservableObject, CLLocationManagerDeleg
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyKilometer
+        // A kilometre was enough when this only had to pick a city for radius
+        // pinning. It isn't any more: the same fix is now the origin of a
+        // per-listing distance quoted to a tenth of a mile and of a walking
+        // time quoted to the minute, and a kilometre of slack is twenty minutes
+        // on foot. Still a single on-demand fix, so the cost is one slightly
+        // longer wait rather than any ongoing draw.
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
     }
 
     var isAuthorized: Bool {
         [.authorizedWhenInUse, .authorizedAlways].contains(manager.authorizationStatus)
+    }
+
+    /// Never asked. A prompt here can still summon the system dialog, so it's
+    /// worth offering one.
+    var isUndecided: Bool { manager.authorizationStatus == .notDetermined }
+
+    /// Asked and refused, or refused on the user's behalf by a restriction.
+    /// The system dialog will not appear again, so the only honest offer is a
+    /// trip to Settings.
+    var isDenied: Bool {
+        [.denied, .restricted].contains(manager.authorizationStatus)
     }
 
     /// Resolves once and caches. Returns nil if the user declines or the fix

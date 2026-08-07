@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import UIKit
 
 /// "How long to go get it?", under the map.
 ///
@@ -7,54 +8,85 @@ import CoreLocation
 /// listing is already the deliberate act — nobody taps into a detail screen by
 /// accident — so making the user ask a second time bought nothing.
 ///
-/// What it does wait for is a *settled* destination. The map shows the city
-/// centroid until the item page lands and then jumps to the listing's own
-/// point, and routing to the centroid first would spend three requests on the
-/// wrong place and then visibly rewrite every number under the user. So the
-/// trigger is the point, not the screen: a listing already in the cache routes
-/// on the first frame, and a cold one routes the moment enrichment settles —
-/// including when it settles on failure, where the centroid is all there will
-/// ever be.
+/// **Both ends have to be real, or there is no row.**
 ///
-/// Appears only when the device has an actual fix. Everything else on this
-/// screen degrades gracefully without one; a travel time cannot, because there
-/// would be nowhere to travel *from*. The chosen search city is not a
-/// substitute: it says which listings Facebook returns, not where the user is.
+/// The destination must be the listing's own published point, off the item
+/// page. A city centroid is not a weaker version of that answer, it is a
+/// different one: routing to the middle of San Francisco from the Inner Sunset
+/// gives a confident "8 min walk" for something that is an hour away. A
+/// distance shown against a centroid is at least captioned as approximate and
+/// reads as a rough sort order; a travel time reads as a plan. So the row
+/// stays away entirely until enrichment lands.
+///
+/// The origin must be the device's own fix. Everything else on this screen
+/// degrades gracefully without one; a travel time cannot, because there would
+/// be nowhere to travel *from*. The chosen search city is not a substitute: it
+/// says which listings Facebook returns, not where the user is.
 struct TravelTimeRow: View {
     let destination: CLLocationCoordinate2D
     let precision: LocationMapCard.Precision
-    /// The item page is still in flight, so `destination` may yet be replaced.
-    let isEnriching: Bool
 
     @EnvironmentObject private var location: LocationProvider
     @StateObject private var travel = MapKitTravelTime.shared
+    @Environment(\.openURL) private var openURL
 
+    @ViewBuilder
     var body: some View {
-        if let origin = location.coordinate {
-            VStack(alignment: .leading, spacing: 8) {
-                modes
-                HStack(spacing: 8) {
-                    Text(caption)
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    // Throttling and dropped connections are both transient and
-                    // both look identical from here, so the only sensible
-                    // response is to offer another go.
-                    if anyFailed {
-                        Button("Try again") { Task { await run(from: origin) } }
-                            .font(.caption)
+        if precision == .listing {
+            if let origin = location.coordinate {
+                estimates(from: origin)
+            } else if location.isUndecided {
+                // The one place in the app where location has an obvious,
+                // concrete payoff to point at — same argument as the seller
+                // sign-in prompt this is modelled on. Tapping summons the
+                // system dialog; nothing here asks for anything itself.
+                LocationPrompt(
+                    title: "Enable location for travel estimates",
+                    subtitle: "Walking, driving and transit times from where you are. Your location never leaves your device.",
+                    action: { Task { _ = await location.resolveOnce() } }
+                )
+            } else if location.isDenied {
+                LocationPrompt(
+                    title: "Location is off for Marketplace",
+                    subtitle: "Turn it on in Settings to see how long it takes to get here.",
+                    action: {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
                     }
-                }
-            }
-            // Keyed on the destination *and* on whether it can still change, so
-            // this fires once for a settled point and re-fires if the item page
-            // moves it. Same key on return within the freshness window means
-            // the cached answer is reused rather than re-requested.
-            .task(id: trigger) {
-                guard !isEnriching || precision == .listing else { return }
-                await run(from: origin)
+                )
+            } else {
+                // Authorised, fix not landed. Nothing to show and nothing to
+                // ask for — but the fix may never have been requested at all
+                // if the user came straight here from the saved shelf without
+                // searching, so ask now rather than sit empty forever.
+                Color.clear
+                    .frame(height: 0)
+                    .task { _ = await location.resolveOnce() }
             }
         }
+    }
+
+    private func estimates(from origin: CLLocationCoordinate2D) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            modes
+            HStack(spacing: 8) {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                // Throttling and dropped connections are both transient and
+                // both look identical from here, so the only sensible
+                // response is to offer another go.
+                if anyFailed {
+                    Button("Try again") { Task { await run(from: origin) } }
+                        .font(.caption)
+                }
+            }
+        }
+        // Keyed on the destination, so this fires once per point. The point
+        // can only be the listing's own by the time we're here, and that never
+        // changes again — so this runs exactly once per listing, and returning
+        // within the freshness window reuses the answer rather than
+        // re-requesting it.
+        .task(id: trigger) { await run(from: origin) }
     }
 
     private func run(from origin: CLLocationCoordinate2D) async {
@@ -62,14 +94,13 @@ struct TravelTimeRow: View {
     }
 
     private var trigger: String {
-        "\(destination.latitude),\(destination.longitude),\(isEnriching)"
+        "\(destination.latitude),\(destination.longitude)"
     }
 
-    private var estimates: [MapKitTravelTime.Estimate] {
-        MapKitTravelTime.Mode.allCases.map { travel.estimate(for: destination, mode: $0) ?? .pending }
+    private var anyFailed: Bool {
+        MapKitTravelTime.Mode.allCases
+            .contains { travel.estimate(for: destination, mode: $0) == .failed }
     }
-
-    private var anyFailed: Bool { estimates.contains(.failed) }
 
     private var modes: some View {
         HStack(spacing: 8) {
@@ -79,13 +110,46 @@ struct TravelTimeRow: View {
         }
     }
 
-    /// Says which of two very different points the estimate was measured to —
-    /// the same distinction the map's circle is drawing above it.
-    private var caption: String {
-        switch precision {
-        case .listing: "Estimated to the approximate area, from your location"
-        case .city: "Estimated to the city centre — the listing's own point isn't known yet"
+    /// Only one case can reach this, but it still says what it measured to:
+    /// the destination is Facebook's *approximate* point, so these are minutes
+    /// to a neighbourhood and not to a door.
+    private let caption = "Estimated to the approximate area, from your location"
+}
+
+/// Deliberately the same card as `sellerSignInPrompt`: an absent capability
+/// explained where its payoff would have been, rather than a blank space that
+/// reads as "there is nothing to say here".
+private struct LocationPrompt: View {
+    let title: String
+    let subtitle: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Image(systemName: "location.circle")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .multilineTextAlignment(.leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         }
+        .buttonStyle(.plain)
     }
 }
 

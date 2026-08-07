@@ -399,7 +399,7 @@ struct DetailView: View {
                 // Under the map, because it answers the question the map
                 // raises. Draws nothing without a device fix — see
                 // `TravelTimeRow`.
-                TravelTimeRow(destination: coordinate, precision: precision, isEnriching: isEnriching)
+                TravelTimeRow(destination: coordinate, precision: precision)
             }
         }
     }
