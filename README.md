@@ -257,6 +257,16 @@ item — several of these are harder or easier than they look. Items marked
 
 **Location and radius**
 
+- [ ] **The drawn radius still needs work.** It is currently the half-diagonal
+      of the measured lattice cell (~572 m in SF), which circumscribes the real
+      uncertainty and so never understates — but the cell is only a *lower*
+      bound on the fuzz, since Facebook may jitter a point before snapping it,
+      and nothing observable from outside settles that. Whether the circle
+      should be larger than the cell, and by how much, is unanswered. Two
+      loose ends alongside it: the `.city` fallback circle is still an invented
+      6 km (`CLPlacemark.region` would give a measured one), and the enriched
+      distance is quoted to a tenth of a mile, which is finer than the grid it
+      is derived from.
 - [ ] **Resolve the user's own location to a place id. (Matt: "location doesn't
       work")** Changing city is *not* solved, which is what the picker's
       curated list was hiding: five of its
