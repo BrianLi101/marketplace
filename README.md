@@ -188,15 +188,36 @@ ordering can be done client-side.
 
 ---
 
+## Feedback from use
+
+From Matt, recorded 2026-08-06. Kept in his words, because a thing a user asked
+for reads differently from a thing we thought of — and four of these five landed
+on work already on the list, which is worth knowing.
+
+| What he said | Where it's tracked |
+|---|---|
+| **"location doesn't work"** | Confirmed, and worse than it looked: five of the twelve cities the picker offered were not places Facebook recognises, and a rejected place silently serves the IP-inferred city instead of failing. Fixed for those five; the general fix is **Location and radius** below (`docs/location-targeting.md`) |
+| **"Feed should be recency based (recently listed)"** | **Feed quality**, first item. Unblocked — the desktop payload dates every card with an exact `creation_time`, so this sorts in Swift without opening a listing |
+| **"Custom items that are ordered"** | **Feed quality**, the business/drop-shipper filter. Read as made-to-order listings — a seller advertising a thing they'll build rather than a thing they have. *Check this reading:* it is the one item here I inferred rather than confirmed |
+| **"Agent, I want a new table and find the best ones on marketplace"** | **Agent shopping**. Almost exactly the framing already written there ("a desk under $100 within 5 miles, no particleboard"), which is a good sign for the shape of that feature |
+| **"Filter out drop shipping"** | **Feed quality**, same bullet as above. Partly solved already: the app defaults to local pickup, and desktop marks shipping per card via `delivery_types` |
+
+The pattern worth noting: nothing here is a request for a feature nobody had
+considered. It is a request for the *local browsing* promise to actually hold —
+right place, fresh listings, real people selling real objects. That is one
+theme, not five items.
+
 ## To do
 
 Unchecked means not started. Notes are what we already know that bears on the
-item — several of these are harder or easier than they look.
+item — several of these are harder or easier than they look. Items marked
+**(Matt)** came from the feedback above rather than from us.
 
 **Location and radius**
 
-- [ ] **Resolve the user's own location to a place id.** Changing city is *not*
-      solved, which is what the picker's curated list was hiding: five of its
+- [ ] **Resolve the user's own location to a place id. (Matt: "location doesn't
+      work")** Changing city is *not* solved, which is what the picker's
+      curated list was hiding: five of its
       twelve slugs were not places Facebook recognises, and a rejected slug
       silently serves the IP-inferred city instead of failing
       (`docs/location-targeting.md`, measured 2026-08-06). Numeric place ids
@@ -230,7 +251,7 @@ item — several of these are harder or easier than they look.
 
 **Feed quality**
 
-- [ ] **Order the feed by most recently listed.** No longer blocked: the desktop
+- [ ] **Order the feed by most recently listed. (Matt)** No longer blocked: the desktop
       search payload dates **every card** with an exact `creation_time`, so this
       can be sorted in Swift without opening a single listing
       (`docs/embedded-payload.md`). The server-side `sortBy=creation_time_descend`
@@ -242,7 +263,8 @@ item — several of these are harder or easier than they look.
       are a desktop-backed "filtered search" mode alongside the mobile feed, or
       client-side filtering of the mobile feed on the fields cards already
       carry (price, condition, city — but *not* date).
-- [ ] **Filter out businesses, drop-shippers and custom-order listings.**
+- [ ] **Filter out businesses, drop-shippers and custom-order listings.
+      (Matt: "filter out drop shipping", "custom items that are ordered")**
       Shipping is now a structured per-card field on desktop: `delivery_types`
       containing `SHIPPING_ONSITE` marked 24 of 24 cards on a shipping-filtered
       page and none on a local one, and it distinguishes *ships only* from
@@ -311,9 +333,12 @@ item — several of these are harder or easier than they look.
 
 **Agent shopping**
 
-- [ ] **Describe what you want, get a set of options.** Tell it "a desk under
-      $100 within 5 miles, no particleboard" and have it run the searches, open
-      the candidates, and come back with a shortlist and reasons.
+- [ ] **Describe what you want, get a set of options. (Matt: "I want a new table
+      and find the best ones on marketplace")** Tell it "a desk under $100
+      within 5 miles, no particleboard" and have it run the searches, open the
+      candidates, and come back with a shortlist and reasons. Matt's phrasing
+      arrived independently and almost identically, which is the closest thing
+      to validation this section has.
 - [ ] Ranking the candidates is the Embeddings item above: the constraint
       "no particleboard" has to be matched against listing text, and Facebook's
       own search won't do it.
