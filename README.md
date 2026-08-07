@@ -232,6 +232,38 @@ to Stockton, Davis and Sacramento. `daysSinceListed=1` keeps 10 of 15 results in
 the requested city. For a local browser the date filter is the better lever, and
 ordering can be done client-side.
 
+**Some search terms return nothing, and it isn't relevance.** Measured
+2026-08-07 in San Francisco, logged out, all within six minutes of each other:
+
+| Query | Result |
+|---|---|
+| `Outside lands` | 24 cards |
+| `Outside lands tickets` | **0 cards**, four attempts |
+| `Outside lands sunday tickets` | **0 cards** |
+| `Tickets` | **0 cards** |
+| `Couch` | 24 cards, payload in 0.75 s |
+
+So it is the word, not the phrase, and not the session: `Couch` was fast and
+full in the same minute as the empty ones. Nothing that would indicate pushback
+appeared either — no login wall, no pacer refusal, no backoff.
+
+The leading explanation is that Marketplace prohibits ticket sales, so a query
+naming them is filtered by *policy* rather than scored by relevance. **That is a
+hypothesis, not a finding.** The test that would settle it is whether other
+prohibited categories behave the same way — firearms, alcohol, animals,
+prescription drugs — and it hasn't been run. Worth running, because the two
+explanations imply very different behaviour: a policy filter is a stable list we
+could recognise and explain, whereas a matching quirk that drops results when a
+common noun is added would be a much broader problem with every multi-word
+search in the app.
+
+Either way it costs the user twenty seconds to find out. `harvest()` polls until
+it gets a non-empty payload and there is no "Facebook returned nothing" signal,
+so an empty result set spends the full timeout before giving up, and an empty
+page is indistinguishable from a slow one until then. It hits both tabs: a
+Seller draft for anything in a filtered category finds no comparables and so
+can't price at all.
+
 ---
 
 ## The Seller tab
