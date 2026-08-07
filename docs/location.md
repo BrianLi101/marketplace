@@ -373,6 +373,46 @@ cell", the cell is wider than it is tall, and the true location is at most
 The lattice is a **lower bound**: Facebook may also jitter before snapping, and
 nothing observable from outside can rule that out.
 
+### Can we name the neighbourhood? Apple can; our coordinate can't. (2026-08-07)
+
+`CLPlacemark.subLocality` returns real neighbourhood names, and it is populated
+reliably — six of six cached San Francisco listings, each a name a local would
+use, and adjacent lattice cells return genuinely different ones:
+
+| listing point | subLocality |
+|---|---|
+| 37.729797, −122.492065 | Merced Manor |
+| 37.735291, −122.492065 | Parkside |
+| 37.735291, −122.393188 | Mendell Hill |
+| 37.751770, −122.492065 | Central Sunset |
+| 37.751770, −122.426147 | Upper Noe |
+| 37.751770, −122.415161 | Mission District |
+
+So the capability is there. The problem is upstream: **one lattice cell spans
+several neighbourhoods.** Geocoding the four corners of a single cell —
+the actual region a published point stands for — against its centre:
+
+| cell centre | centre | NW | NE | SW | SE |
+|---|---|---|---|---|---|
+| 37.751770, −122.426147 | Upper Noe | Central Noe Valley | Mission District | Upper Noe | Juri Commons |
+| 37.735291, −122.492065 | Parkside | Parkside | Parkside | Lakeshore | Merced Manor |
+
+Four distinct neighbourhoods in the first cell, three in the second. The
+centre's name is one sample among several equally likely ones, so "Upper Noe"
+would be a guess dressed as a fact — the same overclaim the map's circle exists
+to avoid.
+
+**If it is ever built, the check is cheap and decisive:** geocode the cell's
+corners and show a neighbourhood only when they all agree. Cache by cell rather
+than by listing, since points are on a lattice and listings share cells. In San
+Francisco that check would almost always decline; in suburbs, where
+neighbourhoods are larger than ~600 × 950 m, it would usually pass. That is the
+right split — the label appears exactly where it is true.
+
+Note for whenever this is picked up: `CLGeocoder` is deprecated as of iOS 26 in
+favour of MapKit's reverse-geocoding request. The app still uses it in
+`DistanceResolver` and `LocationProvider`.
+
 ---
 
 ## 9. The user's own location, in the app
