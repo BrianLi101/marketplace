@@ -205,6 +205,42 @@ So there are two granularities, and they disagree:
 * **the centring** — the exact point, held in session state, invisible in the
   URL, and *not* reproducible from a slug or a place id
 
+#### How much does it move, within one city? (New York, 2026-08-07)
+
+Five coordinates across New York, same URL every time
+(`/marketplace/nyc/search/?query=desk`), all returning the logged-out cap of
+~15 cards:
+
+| vs | overlap | apart |
+|---|---|---|
+| Downtown vs **Downtown again** (after all four others intervened) | **100%** (15/15) | 0 km |
+| Downtown vs Brooklyn/Williamsburg | 93% | ~5 km |
+| Downtown vs Midtown | 76% | ~5 km |
+| Midtown vs Uptown/Harlem | 42% | ~7 km |
+| Downtown vs Uptown/Harlem | **36%** | ~11 km |
+
+The effect **scales with distance**, which is what makes it convincing:
+identical at zero separation, mostly-shared at 5 km, barely-a-third-shared at
+11 km. Random churn would not produce a gradient, and the 100% repeat rules out
+drift over the run.
+
+Two things worth noticing:
+
+* **It is distance, not administrative geography.** Williamsburg is *in
+  Brooklyn* but ~5 km from the Financial District, and it behaved like the
+  other 5 km pair — 93% overlap with Downtown — not like a different borough.
+* **The place never changes.** All five returned `/marketplace/nyc`, pill "New
+  York · 5 mi", and the borough mix of the results barely moved (11–13 "New
+  York, NY", 1–3 "Brooklyn, NY" throughout). This is re-ranking *within* the
+  city's inventory, not a different catchment.
+
+**The 1 mi question is unanswered.** Pulling the radius down would have made
+this unmissable at these separations, but the picker's radius is not a native
+`<select>` — it renders as a div reading "Radius 5 miles" — so the script
+couldn't set it and every run above used Facebook's default 5 mi. Driving that
+dropdown is the next probe, and it doubles as the first real test of whether
+the picker's radius does anything at all (§7).
+
 **This has a direct consequence for the app, currently unfixed.**
 `MarketplacePlaceResolver` runs on the `.unauthed` store, which is a *fresh
 non-persistent* store per instance, while `DesktopFeedEngine` searches on

@@ -39,6 +39,7 @@ struct ContentView: View {
                 Button("GeoFeed") { controller.startGeoFeedProbe() }
                 Button("Grain") { controller.startPlaceGranularityProbe() }
                 Button("Retain") { controller.startCoordinateRetentionProbe() }
+                Button("Centre") { controller.startCityCentringProbe() }
             }
             .font(.caption)
             .padding(.vertical, 4)
@@ -426,6 +427,58 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
     }
 
     func startCoordinateRetentionProbe() { Task { await runCoordinateRetentionProbe() } }
+
+    /// Does the coordinate move results *within* one large city?
+    ///
+    /// The San Francisco run showed 62% overlap against a zero noise floor,
+    /// which says the coordinate does something — but id overlap is a blunt
+    /// instrument and 7 listings is a thin sample. New York is the better
+    /// subject: it is large enough that "downtown vs uptown vs Brooklyn" are
+    /// genuinely different markets, and the *boroughs named on the cards* are a
+    /// far more interpretable signal than which ids happen to coincide. If the
+    /// coordinate centres anything, feeding Williamsburg should surface
+    /// Brooklyn listings that feeding Harlem does not.
+    ///
+    /// Also tries to pull the radius down to its smallest option first. A 1 mi
+    /// radius would make the answer unmissable — these points are 5-11 km
+    /// apart, so the result sets should barely intersect — and it doubles as
+    /// the first real test of whether the picker's radius does anything at all,
+    /// which every other radius control in this project has not.
+    func runCityCentringProbe() async {
+        webView.customUserAgent = Self.desktopUA
+        let search = "https://www.facebook.com/marketplace/nyc/search/?query=desk"
+
+        let points: [(String, Double, Double)] = [
+            ("Downtown/FiDi",  40.7075, -74.0113),
+            ("Midtown",        40.7549, -73.9707),
+            ("Uptown/Harlem",  40.8116, -73.9465),
+            ("Brooklyn/Wburg", 40.7081, -73.9571),
+            // Repeat, last, so the noise floor is measured *after* the others
+            // have intervened rather than back to back.
+            ("Downtown again", 40.7075, -74.0113),
+        ]
+
+        for (label, lat, lon) in points {
+            await load("https://www.facebook.com/marketplace/london/")
+            try? await Task.sleep(for: .seconds(7))
+            _ = await js("(function(){ window.__geoFeed = { lat: \(lat), lon: \(lon) }; return '1'; })()")
+            _ = await js(Self.openLocationDialogJS)
+            try? await Task.sleep(for: .seconds(3))
+            emit("CENTRE[\(label)] radius \(await js(Self.shrinkRadiusJS))")
+            _ = await js(Self.clickGeoArrowJS)
+            try? await Task.sleep(for: .seconds(5))
+            _ = await js(Self.applyLocationJS)
+            try? await Task.sleep(for: .seconds(7))
+            emit("CENTRE[\(label)] pill \(await js(Self.readGrainJS).prefix(120))")
+
+            await load(search)
+            try? await Task.sleep(for: .seconds(9))
+            emit("CENTRE[\(label)] \(await js(Self.listingIDsJS))")
+        }
+        emit("=== CENTREPROBE COMPLETE ===")
+    }
+
+    func startCityCentringProbe() { Task { await runCityCentringProbe() } }
 
     /// Jaccard overlap of two id lists, as a percentage.
     static func overlap(_ lhs: String, _ rhs: String) -> String {
@@ -3631,6 +3684,42 @@ final class SpikeController: NSObject, ObservableObject, WKNavigationDelegate {
       if (!apply) return JSON.stringify({ applied: false, reason: 'no Apply' });
       apply.click();
       return JSON.stringify({ applied: true });
+    })()
+    """
+
+    /// Pulls the picker's radius down to its smallest option.
+    ///
+    /// Reports what it actually found rather than assuming a `<select>` — the
+    /// control renders as a dropdown but Facebook builds most of its UI from
+    /// divs, and "it silently did nothing" is the failure to avoid.
+    static let shrinkRadiusJS = """
+    (function(){
+      var out = { kind: null, ok: false, options: [], chose: null };
+      var sel = document.querySelector('select');
+      if (sel) {
+        out.kind = 'select';
+        out.options = Array.prototype.map.call(sel.options, function(o){ return o.text; });
+        var best = null, bestN = Infinity;
+        Array.prototype.forEach.call(sel.options, function(o){
+          var n = parseFloat(o.text);
+          if (!isNaN(n) && n < bestN) { bestN = n; best = o; }
+        });
+        if (best) {
+          var setter = Object.getOwnPropertyDescriptor(
+            window.HTMLSelectElement.prototype, 'value').set;
+          setter.call(sel, best.value);
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          out.ok = true; out.chose = best.text;
+        }
+      } else {
+        // No native select — say so, and echo the nearby buttons so the real
+        // control can be identified rather than guessed at.
+        out.kind = 'not-a-select';
+        out.options = Array.prototype.slice.call(document.querySelectorAll('div[role="button"],label'))
+          .map(function(e){ return (e.textContent||'').trim().slice(0, 30); })
+          .filter(function(t){ return /mile|km|radius/i.test(t); }).slice(0, 6);
+      }
+      return JSON.stringify(out);
     })()
     """
 
