@@ -18,6 +18,18 @@ struct MarketComp: Identifiable, Equatable {
 
     var id: String { listing.id }
 
+    /// How long this had been listed, as of now.
+    ///
+    /// On a **sold** card this is the useful one: it is an upper bound on how
+    /// long the item took to sell, because it was listed then and is gone now.
+    /// Facebook publishes no sale date — `creation_time` is the only time field
+    /// on a listing, sold or not (verified 2026-08-07) — so this inference is
+    /// the whole of what "recently sold" can mean here.
+    var daysListed: Int? {
+        guard let postedAt else { return nil }
+        return max(0, Int(Date().timeIntervalSince(postedAt) / 86_400))
+    }
+
     init(payload: PayloadListing, cardIndex: Int) {
         listing = payload.makeListing(cardIndex: cardIndex)
         price = PriceGuide.parse(payload.priceFormatted)
@@ -106,7 +118,54 @@ final class ComparableSearch {
             sort: .bestMatch,
             delivery: .localPickup
         )
+        return await run(query, limit: limit)
+    }
 
+    /// What has actually sold nearby, lately.
+    ///
+    /// The one thing the rest of the app has never been able to see. A default
+    /// search returns **0 sold and 0 pending** — measured, not assumed — so
+    /// every listing the app has shown anyone is by construction still for
+    /// sale. `availability=out of stock` is the only way past that.
+    ///
+    /// Two measurements shape the call (`docs/filter-parameters.md` §10):
+    ///
+    /// * **`out of stock` is Pending *and* Sold**, and the proportion is not a
+    ///   detail. Without a day filter a couch search came back 2 sold against
+    ///   12 pending — a strip of things that haven't sold. Adding
+    ///   `daysSinceListed` inverted it to 12 sold against 3. Recently-listed
+    ///   unavailable items have mostly sold outright; older ones are sitting in
+    ///   Pending. So the window is not optional here, and pending cards are
+    ///   dropped rather than shown.
+    /// * **Thirty days, not seven.** Seven is a tighter recency claim and it
+    ///   works, but the result cap is ~15 before pending is removed, and a
+    ///   narrow query with a narrow window returns nothing at all. Thirty keeps
+    ///   the sample usable, and each card carries its own age so the claim made
+    ///   about it stays specific.
+    func soldComparables(to term: String,
+                         citySlug: String,
+                         radiusKM: Int,
+                         limit: Int = 15) async -> Result<[MarketComp], Failure> {
+        let query = SearchQuery(
+            kind: .search(term),
+            radiusKM: radiusKM == 0 ? 40 : radiusKM,
+            citySlug: citySlug,
+            coordinate: nil,
+            sort: .bestMatch,
+            delivery: .localPickup,
+            age: .month,
+            availability: .unavailable
+        )
+        return await run(query, limit: limit).map { comps in
+            // Sold only. A pending listing is an item someone has agreed to buy
+            // and not yet collected — it is evidence of interest, not of a
+            // completed sale, and mixing the two would let "recently sold" mean
+            // "recently spoken for".
+            comps.filter(\.isSold)
+        }
+    }
+
+    private func run(_ query: SearchQuery, limit: Int) async -> Result<[MarketComp], Failure> {
         let payload = await engine.load(query)
         if case .loginWall = engine.state { return .failure(.loginWall) }
 
@@ -128,7 +187,7 @@ final class ComparableSearch {
             if case .failed(let message) = engine.state { return .failure(.engine(message)) }
             return .failure(.nothingFound)
         }
-        Logger.seller.info("comps for \(term, privacy: .public): \(comps.count, privacy: .public)")
+        Logger.seller.info("comps for \(query.displayName, privacy: .public) [\(query.availability.rawValue, privacy: .public)]: \(comps.count, privacy: .public), \(comps.filter(\.isSold).count, privacy: .public) sold")
         return .success(comps)
     }
 }

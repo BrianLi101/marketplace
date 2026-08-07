@@ -190,5 +190,86 @@ and the reason the record never leaves the device.
 - Does the desktop cap change when logged in? Everything here is logged out,
   which is the app's permanent condition, so this is academic unless the
   backend ever fetches with a session.
-- Is `availability=out of stock` useful for detecting sold items on listings the
-  user has saved?
+- Does `availability=out of stock` work for saved listings specifically? §10
+  answers the general question — it works, and it is the only route to sold
+  data — but re-checking a *known* listing is a different call: it needs the
+  item page rather than a search, and whether a sold item's own page still
+  renders is untested.
+
+
+---
+
+## 10. `availability` reaches sold listings, and nothing else does
+
+**Date:** 2026-08-07. San Francisco, logged out, desktop surface, all within
+one hour. This answers the §9 question and opens the Seller tab's sold strip.
+
+### It works, and the default search hides sold items completely
+
+| Query | Cards | Sold | Pending |
+|---|---|---|---|
+| `dresser&daysSinceListed=30` | 14 | **0** | **0** |
+| `dresser&availability=out of stock&daysSinceListed=30` | 15 | 11 | 4 |
+| `couch&availability=out of stock` | 14 | 2 | 12 |
+| `couch&availability=out of stock&daysSinceListed=7` | 15 | 12 | 3 |
+
+The first row is the important one. A plain search returns **nothing** that has
+sold or is pending, so every listing this app has ever shown anybody is, by
+construction, still for sale. `availability=out of stock` is the only way past
+that, and there is no third value — the control offers `in stock` and `out of
+stock` and nothing more.
+
+### `out of stock` is Pending ∪ Sold, and the ratio depends on the day filter
+
+Compare the couch rows. Without a window: 2 sold against 12 pending, which is a
+list of things that have *not* sold. With `daysSinceListed=7`: 12 sold against
+3 pending. Recently-listed unavailable items have mostly sold outright, where
+older ones accumulate in Pending — plausibly because Pending is a state
+listings sit in rather than pass through.
+
+So the day filter is not optional for this purpose, and callers must still
+separate the two on `is_sold`. `ComparableSearch.soldComparables` uses
+`daysSinceListed=30`: seven is a tighter recency claim and works, but the cap is
+~15 cards *before* pending and free items are removed, and a narrow query with a
+narrow window returns nothing at all.
+
+### Sold cards carry the full payload — but there is no sale date
+
+A sold listing's payload block is complete: `creation_time`, `listing_price`,
+`strikethrough_price`, `location`, `delivery_types`, title, `is_sold: true`,
+`is_pending: false`. Note `is_live` is **also true** on a sold card, so it is
+not an availability signal.
+
+The absence is the thing that matters. `creation_time` is the **only** time
+field anywhere in the block — no sale, close, sold-at or updated timestamp
+exists. So "recently sold" can only ever be inferred: an item listed *n* days
+ago that is now gone sold in **at most** *n* days. That is an upper bound, and
+the app states it as one ("Sold in ≤4 days") rather than as a fact.
+
+It also means every price here is still an **asking** price. Facebook publishes
+what a sold item was listed at, never what changed hands, so an accepted offer
+below asking is invisible.
+
+### Sold prices are *not* systematically lower than asking prices
+
+The obvious hypothesis, and it did not survive contact:
+
+| San Francisco dressers | n (priced) | Median |
+|---|---|---|
+| Active asking | 12 | **$50** |
+| Recently sold, listed at | 10 | **$52.50** |
+
+Close enough to be the same number. So the sold set's value is not "what things
+really go for" — it is *liquidity*: evidence that a price is achievable, and
+how fast. It is a **survivor's list**, and the bias runs one way only. Items
+that failed to sell at a price are exactly the ones missing from it, so it can
+support "this price works" and can never support "this price is too high".
+
+### Free items swamp the sold set, by category
+
+Of twelve recently-sold couches, **seven were listed at $0**. Free things sell,
+so they are wildly over-represented in anything filtered on having sold. It is
+category-dependent — only one of eleven sold dressers was free — which is
+exactly why it has to be handled rather than eyeballed. `PriceGuide` excludes
+non-positive prices from the arithmetic on both sides; the sold strip still
+shows them, because "several of these went for free" is worth a seller knowing.

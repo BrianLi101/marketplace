@@ -17,7 +17,7 @@ final class SellerToolsModel: ObservableObject {
     /// whole run would hide that the app went and looked at the actual market,
     /// which is the part worth trusting.
     struct Step: Identifiable, Equatable {
-        enum Kind: Hashable { case understand, search, price, write }
+        enum Kind: Hashable { case understand, search, sold, price, write }
         enum State: Equatable { case running, done, failed }
 
         let kind: Kind
@@ -41,6 +41,9 @@ final class SellerToolsModel: ObservableObject {
     @Published private(set) var steps: [Step] = []
     @Published private(set) var comps: [MarketComp] = []
     @Published private(set) var guide: PriceGuide?
+    /// What sold nearby in the last month. Empty is an ordinary outcome, not a
+    /// failure — plenty of things simply haven't sold near you lately.
+    @Published private(set) var sold = SoldSignal(comps: [])
     @Published private(set) var draft = SellerDraft()
     /// What we actually searched for, which is usually not what the user typed.
     /// Shown, because a price guide is only as good as the comparables behind
@@ -97,6 +100,7 @@ final class SellerToolsModel: ObservableObject {
         steps = []
         comps = []
         guide = nil
+        sold = SoldSignal(comps: [])
         draft = SellerDraft()
         searchTerm = nil
         writingNotice = nil
@@ -107,6 +111,7 @@ final class SellerToolsModel: ObservableObject {
         steps = []
         comps = []
         guide = nil
+        sold = SoldSignal(comps: [])
         draft = SellerDraft()
         searchTerm = nil
         writingNotice = nil
@@ -141,7 +146,21 @@ final class SellerToolsModel: ObservableObject {
                ? "Found 1 nearby listing to compare against"
                : "Found \(comps.count) nearby listings to compare against")
 
-        // 3 — arithmetic, in Swift, instantly. Its own step anyway: it is a
+        // 3 — what actually sold. A second page load, and the only one in the
+        // app that reaches listings no longer for sale.
+        //
+        // Non-fatal by design: a narrow item may have nothing sold nearby in a
+        // month, and that is information rather than an error. The draft
+        // proceeds on the active board alone.
+        begin(.sold, "Checking what's actually been selling")
+        let soldResult = await search.soldComparables(to: term,
+                                                      citySlug: prefs.locationSlug ?? "sanfrancisco",
+                                                      radiusKM: prefs.radiusKM)
+        guard !Task.isCancelled else { return }
+        if case .success(let found) = soldResult { sold = SoldSignal(comps: found) }
+        finish(.sold, sold.summary)
+
+        // 4 — arithmetic, in Swift, instantly. Its own step anyway: it is a
         // separate claim from "we found some listings", and it is the one that
         // can come back empty when everything found was free or sold.
         begin(.price, "Reading the prices")
@@ -149,14 +168,14 @@ final class SellerToolsModel: ObservableObject {
         guide = computed
         finish(.price, Self.summary(of: computed))
 
-        // 4 — the words.
+        // 5 — the words.
         begin(.write, "Writing your listing")
         let availability = copywriter.availability
         guard availability.isReady else {
             settleWithoutModel(computed, notice: availability.explanation)
             return
         }
-        let written = await copywriter.draft(item: item, comps: comps, guide: computed) { [weak self] partial in
+        let written = await copywriter.draft(item: item, comps: comps, guide: computed, sold: sold) { [weak self] partial in
             self?.draft = partial
         }
         guard !Task.isCancelled else { return }
@@ -186,7 +205,7 @@ final class SellerToolsModel: ObservableObject {
     /// is missing, and why, beats an empty screen with an error on it.
     private func settleWithoutModel(_ guide: PriceGuide, notice: String) {
         draft.price = guide.median
-        draft.rationale = guide.median.map { guide.explanation(for: $0) }
+        draft.rationale = guide.median.map { sold.rationale(for: $0, against: guide) }
         writingNotice = notice
         if guide.median != nil {
             finish(.write, "Priced from the market — no description written")

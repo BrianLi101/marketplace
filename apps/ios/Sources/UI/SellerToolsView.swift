@@ -27,6 +27,7 @@ struct SellerToolsView: View {
                     prompt
                     if !model.steps.isEmpty { transcript }
                     if !model.comps.isEmpty { comparables }
+                    if !model.sold.isEmpty { recentlySold }
                     if !model.draft.isEmpty { draftFields }
                     if let notice = model.writingNotice { noticeCard(notice) }
                     if case .failed(let message) = model.phase { failureCard(message) }
@@ -154,6 +155,47 @@ struct SellerToolsView: View {
         }
     }
 
+    /// The half of the market the app has never been able to show.
+    ///
+    /// A default Marketplace search returns nothing that has sold — measured,
+    /// 0 of 14 — so until now every listing this app has ever displayed was
+    /// something still sitting unsold. These are the ones that went.
+    ///
+    /// Each card carries its own age rather than the strip carrying an average,
+    /// because the age *is* the claim: this was listed four days ago and it is
+    /// gone, so it sold in at most four days.
+    private var recentlySold: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recently sold nearby")
+                .font(.headline)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 12) {
+                    ForEach(model.sold.comps) { comp in
+                        CompCard(comp: comp, footnote: soldFootnote(comp))
+                            .onTapGesture { selected = comp.listing }
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            // The two caveats that keep this honest, and neither is optional.
+            // Facebook publishes what a sold item was *listed* at, never what
+            // it went for; and a list filtered on having sold cannot contain
+            // the things that didn't.
+            Text("Listed prices, not what they went for — Facebook doesn't publish that. Things that didn't sell aren't here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// "Sold in ≤4 days" — the bound, stated as a bound. It was listed then and
+    /// it is gone now; it may have gone in an hour.
+    private func soldFootnote(_ comp: MarketComp) -> String? {
+        guard let days = comp.daysListed else { return "Sold" }
+        if days <= 1 { return "Sold within a day" }
+        return "Sold in ≤\(days) days"
+    }
+
     // MARK: - The draft
 
     private var draftFields: some View {
@@ -274,6 +316,9 @@ private struct CopyableField: View {
 /// this card is on the screen.
 private struct CompCard: View {
     let comp: MarketComp
+    /// Shown under the title on the sold strip, where how fast it went is the
+    /// whole reason the card is there. Nil on the active strip.
+    var footnote: String?
 
     private static let side: CGFloat = 124
 
@@ -301,6 +346,11 @@ private struct CompCard: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
+            }
+            if let footnote {
+                Text(footnote)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.tint)
             }
         }
         .frame(width: Self.side, alignment: .leading)

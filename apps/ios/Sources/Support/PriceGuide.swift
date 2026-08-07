@@ -71,20 +71,24 @@ struct PriceGuide: Equatable {
 
     /// Built from whatever the market search returned.
     ///
-    /// Two exclusions, both of which would otherwise drag the guide somewhere
-    /// untrue:
+    /// **Free and $0 listings are always excluded.** A giveaway is not a data
+    /// point about what a thing is worth, and one of them in a sample of eight
+    /// moves the median a long way. This matters far more on the sold side than
+    /// it looks: of twelve recently-sold couches in San Francisco, **seven were
+    /// free**. Free things sell, so they are wildly over-represented in
+    /// anything filtered on having sold. (Category-dependent — only one of
+    /// eleven sold dressers was free — which is exactly why it has to be
+    /// handled rather than eyeballed.)
     ///
-    /// * **Free and $0 listings.** A giveaway is not a data point about what a
-    ///   thing is worth, and one of them in a sample of eight moves the median
-    ///   a long way.
-    /// * **Sold cards.** Facebook's "Sold" is seller-marked, not a
-    ///   transaction record, so it is neither an asking price nor a sale price
-    ///   — it is a listing that stopped being one.
-    init(comps: [MarketComp]) {
+    /// - Parameter countingSold: whether sold cards count. False for a guide
+    ///   about what the seller is *competing with*, where a listing that
+    ///   stopped being one isn't competition. True for a guide about what
+    ///   actually moved, where they are the entire point.
+    init(comps: [MarketComp], countingSold: Bool = false) {
         var usable: [Int] = []
         var dropped = 0
         for comp in comps {
-            guard !comp.isSold, let price = comp.price, price > 0 else {
+            guard countingSold || !comp.isSold, let price = comp.price, price > 0 else {
                 dropped += 1
                 continue
             }

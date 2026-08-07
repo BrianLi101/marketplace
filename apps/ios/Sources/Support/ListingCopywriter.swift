@@ -141,12 +141,14 @@ final class ListingCopywriter {
     func draft(item: String,
                comps: [MarketComp],
                guide: PriceGuide,
+               sold: SoldSignal,
                onUpdate: @MainActor @escaping (SellerDraft) -> Void) async -> Result<SellerDraft, Failure> {
         #if canImport(FoundationModels)
         if #available(iOS 26, *) {
             let availability = availability
             guard case .ready = availability else { return .failure(.unavailable(availability)) }
-            return await Self.generateDraft(item: item, comps: comps, guide: guide, onUpdate: onUpdate)
+            return await Self.generateDraft(item: item, comps: comps, guide: guide,
+                                            sold: sold, onUpdate: onUpdate)
         }
         #endif
         return .failure(.unavailable(.needsNewerOS))
@@ -243,7 +245,8 @@ final class ListingCopywriter {
     /// The statistics are handed over already computed, and the recommendation
     /// is bounded to the interquartile range up front, so the model is choosing
     /// within a range rather than picking a number.
-    static func headlinePrompt(item: String, comps: [MarketComp], guide: PriceGuide) -> String {
+    static func headlinePrompt(item: String, comps: [MarketComp],
+                               guide: PriceGuide, sold: SoldSignal) -> String {
         var lines: [String] = []
         lines.append("The seller is selling: \"\(item)\"")
         lines.append("")
@@ -268,6 +271,21 @@ final class ListingCopywriter {
             } else if let median = guide.median {
                 lines.append("Too few comparables for a reliable range. Stay near \(median).")
             }
+        }
+
+        // The sold set, given last so it is the most recent thing read before
+        // the model answers — and given as *evidence a price worked*, never as
+        // a target. It is a survivor's list: things that failed to sell at a
+        // price are precisely the ones absent from it, so it can support "this
+        // price is achievable" and can never support "this price is too high".
+        if !sold.isEmpty, sold.guide.count >= 3,
+           let low = sold.guide.lowest, let high = sold.guide.highest {
+            lines.append("")
+            lines.append("Separately, \(sold.guide.count) similar items nearby have sold in the last month. They were listed at \(sold.guide.money(low)) to \(sold.guide.money(high)).")
+            if let days = sold.medianDaysToSell {
+                lines.append("They sold within about \(days) day\(days == 1 ? "" : "s") of being listed.")
+            }
+            lines.append("Treat that as evidence those prices are achievable, not as a target. Items that did not sell are not in that list.")
         }
         return lines.joined(separator: "\n")
     }
@@ -391,19 +409,22 @@ extension ListingCopywriter {
     static func generateDraft(item: String,
                               comps: [MarketComp],
                               guide: PriceGuide,
+                              sold: SoldSignal,
                               onUpdate: @MainActor @escaping (SellerDraft) -> Void) async -> Result<SellerDraft, Failure> {
         var latest = SellerDraft()
 
         do {
             let session = LanguageModelSession(instructions: headlineInstructions)
-            let stream = session.streamResponse(to: headlinePrompt(item: item, comps: comps, guide: guide),
+            let stream = session.streamResponse(to: headlinePrompt(item: item, comps: comps,
+                                                                   guide: guide, sold: sold),
                                                 generating: DraftedHeadline.self,
                                                 options: options)
             for try await partial in stream {
                 latest.title = partial.content.title
                 if let price = partial.content.price {
-                    latest.price = guide.clamped(price)
-                    latest.rationale = guide.explanation(for: guide.clamped(price))
+                    let held = guide.clamped(price)
+                    latest.price = held
+                    latest.rationale = sold.rationale(for: held, against: guide)
                 }
                 onUpdate(latest)
             }

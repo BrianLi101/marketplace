@@ -274,10 +274,33 @@ price, a title and a description with copy buttons — the price backed by what 
 listed near you at that moment, the words written by Apple's on-device model.
 Nothing typed there leaves the phone.
 
-It is one page load per draft and it opens no item pages, so it costs the same
-traffic as one search. It shares `RequestPacer` with the browse engines and runs
+It is two page loads per draft — the active board, then what has sold — and it
+opens no item pages. It shares `RequestPacer` with the browse engines and runs
 on its own `DesktopFeedEngine`, so drafting a listing doesn't navigate the
 results the user was reading.
+
+**It can see sold listings, which nothing else in the app can.** A plain
+Marketplace search returns **0 sold and 0 pending** cards, so every listing this
+app has ever displayed was something still sitting unsold.
+`availability=out of stock` is the only route past that, and it works
+(`docs/filter-parameters.md` §10). Four things about it shape what the feature
+is allowed to claim, all measured 2026-08-07:
+
+- **There is no sale date.** `creation_time` is the only time field on a
+  listing, sold or not. So "recently sold" is an inference — listed *n* days
+  ago, gone now, therefore sold in **at most** *n* days — and the UI states it
+  as the bound it is ("Sold in ≤4 days").
+- **The prices are still asking prices.** Facebook publishes what a sold item
+  was *listed* at, never what changed hands. An accepted offer below asking is
+  invisible.
+- **Sold prices are not systematically lower.** San Francisco dressers: active
+  asking median $50 across 12, sold-and-listed-at median $52.50 across 10. The
+  hypothesis was the obvious one and it didn't survive. The sold set's value is
+  liquidity — evidence a price is achievable, and how fast — not a truer price.
+- **It is a survivor's list.** Things that failed to sell at a price are exactly
+  the ones missing, so it can support "this price works" and can never support
+  "this price is too high". The prompt says so in as many words, because a model
+  given a set of sold prices will otherwise treat them as a target.
 
 **Every number is Swift's; every sentence is the model's.** That line is drawn
 where it is because of what happened on the other side of it, all measured
@@ -567,14 +590,15 @@ item — several of these are harder or easier than they look. Items marked
       Embeddings item above is the real fix — embed the seller's description and
       each comparable, and weight the median by similarity instead of counting
       every card equally.
-- [ ] **Asking prices are the only prices Facebook gives us.** Everything the
-      price guide knows is what sellers *want*, never what anything sold for,
-      and the gap between those is the whole game in second-hand. The UI says so
-      in as many words. `isSold` is on the card and is excluded from the
-      arithmetic, but Facebook's "Sold" is seller-marked and carries no price
-      history, so it is not the missing signal. There may be no honest fix here,
-      only honest labelling — worth deciding deliberately rather than by
-      default.
+- [x] ~~**Asking prices are the only prices Facebook gives us.**~~ Partly
+      answered 2026-08-07, and not the way this item assumed.
+      `availability=out of stock` does reach sold listings, so the Seller tab
+      now shows a "Recently sold nearby" strip and feeds the sold band to the
+      model. But the prices on a sold card are what it was *listed* at, so the
+      gap between asking and paid is still invisible — the win is liquidity and
+      speed, not a truer price. See **The Seller tab** above.
+      What remains: a sold item's own **item page** hasn't been checked. If it
+      renders, it may carry something a search card doesn't.
 - [ ] **A price with no market behind it still gets shown.** With one or two
       comparables there is no quartile band, and the guide falls back to
       "around CA$X" off a sample of two. It says the count, which is the

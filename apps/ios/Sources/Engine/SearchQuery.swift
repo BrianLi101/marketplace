@@ -70,6 +70,21 @@ struct SearchQuery: Equatable {
         }
     }
 
+    /// Whether the item is still for sale.
+    ///
+    /// The one parameter that reaches listings the default search will not show
+    /// you at all: a plain search returns 0 sold and 0 pending cards, so
+    /// everything the app has ever seen is by construction still available.
+    ///
+    /// `out of stock` means *unavailable*, which is Pending **and** Sold
+    /// together — the caller has to separate them on `is_sold`, and the mix
+    /// depends heavily on how it is combined (`docs/filter-parameters.md` §10).
+    enum Availability: String, Equatable {
+        case any = ""
+        case available = "in stock"
+        case unavailable = "out of stock"
+    }
+
     enum Condition: String, Equatable, CaseIterable {
         case new
         case usedLikeNew = "used_like_new"
@@ -94,6 +109,7 @@ struct SearchQuery: Equatable {
     var sort: Sort = .bestMatch
     var delivery: Delivery = .any
     var age: Age = .any
+    var availability: Availability = .any
     var conditions: [Condition] = []
     var minPrice: Int?
     var maxPrice: Int?
@@ -101,7 +117,7 @@ struct SearchQuery: Equatable {
     static func == (lhs: SearchQuery, rhs: SearchQuery) -> Bool {
         lhs.kind == rhs.kind && lhs.radiusKM == rhs.radiusKM && lhs.citySlug == rhs.citySlug
             && lhs.sort == rhs.sort && lhs.delivery == rhs.delivery && lhs.age == rhs.age
-            && lhs.conditions == rhs.conditions
+            && lhs.availability == rhs.availability && lhs.conditions == rhs.conditions
             && lhs.minPrice == rhs.minPrice && lhs.maxPrice == rhs.maxPrice
             && lhs.coordinate?.latitude == rhs.coordinate?.latitude
             && lhs.coordinate?.longitude == rhs.coordinate?.longitude
@@ -137,6 +153,11 @@ struct SearchQuery: Equatable {
         if age != .any {
             items.append(URLQueryItem(name: "daysSinceListed", value: String(age.rawValue)))
         }
+        // Spaces and all — "out of stock" is the literal value Facebook's own
+        // control emits, and `URLComponents` percent-encodes it correctly.
+        if availability != .any {
+            items.append(URLQueryItem(name: "availability", value: availability.rawValue))
+        }
         if !conditions.isEmpty {
             // Comma-separated, no spaces — the shape Facebook's own checkboxes
             // produce.
@@ -169,7 +190,7 @@ struct SearchQuery: Equatable {
 
     /// True when anything beyond the search term is narrowing the results.
     var hasActiveFilters: Bool {
-        sort != .bestMatch || delivery != .any || age != .any
+        sort != .bestMatch || delivery != .any || age != .any || availability != .any
             || !conditions.isEmpty || minPrice != nil || maxPrice != nil
     }
 
