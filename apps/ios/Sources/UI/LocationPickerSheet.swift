@@ -28,12 +28,25 @@ struct LocationPickerSheet: View {
         case city(String)
     }
 
+    /// Typing takes the screen over.
+    ///
+    /// The suggestions used to be a third section, below the map and the
+    /// distance pills — so results for what you had just typed appeared off the
+    /// bottom of the screen and had to be scrolled to. A search field whose
+    /// results aren't where you are looking isn't a search field.
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         NavigationStack {
             List {
-                currentSection
-                distanceSection
-                if !cities.suggestions.isEmpty { suggestionSection }
+                if isSearching {
+                    suggestionSection
+                } else {
+                    currentSection
+                    distanceSection
+                }
                 if let failure { failureSection(failure) }
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
@@ -59,26 +72,20 @@ struct LocationPickerSheet: View {
                                 precision: .city,
                                 userLocation: location.coordinate)
                     .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                // Just the name.
+                //
+                // This used to also print the URL segment and a "confirmed on
+                // Facebook" badge. Both were really notes to ourselves: the
+                // segment is an implementation detail, and the badge reassured
+                // the reader about something that is now an invariant — an
+                // unconfirmed place is never stored at all, so anything on this
+                // screen has already been checked. Saying so added a line
+                // without adding a fact.
                 HStack {
-                    Image(systemName: place.origin == .deviceFix ? "location.fill" : "mappin.and.ellipse")
+                    Image(systemName: place.isUserLocation ? "location.fill" : "mappin.and.ellipse")
                         .foregroundStyle(.tint)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(place.name).font(.subheadline.weight(.semibold))
-                        // The segment is worth showing. It is what actually
-                        // goes in the URL, and seeing "Berkeley → oakland"
-                        // explains a surprising result set immediately.
-                        Text("Facebook calls this `\(place.segment)`")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        // Says it was checked, not just requested. A place that
-                        // resolved and then quietly served somewhere else is
-                        // never stored, so anything shown here is confirmed.
-                        if let pill = place.verifiedPill {
-                            Label("Confirmed on Facebook — \(pill)", systemImage: "checkmark.seal")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    Text(place.name)
+                        .font(.subheadline.weight(.semibold))
                 }
             }
 
@@ -139,8 +146,17 @@ struct LocationPickerSheet: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
     private var suggestionSection: some View {
         Section("Cities") {
+            // Now that this is the only thing on screen while typing, it has to
+            // account for having nothing to show — an empty section would read
+            // as the field being broken.
+            if cities.suggestions.isEmpty {
+                Text(cities.isSearching ? "Searching…" : "No places found.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(cities.suggestions) { suggestion in
                 Button {
                     Task { await use(suggestion) }
