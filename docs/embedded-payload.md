@@ -311,3 +311,44 @@ listing, because the search response already dates every card.
 - What transport does mobile pagination actually use (§5b)? Answering it would
   need a proxy or `WKURLSchemeHandler`-level interception rather than anything
   reachable from inside the page.
+
+## 8. The browse path has no usable payload — measured 2026-08-07
+
+Prompted by the home screen's Discover section, which loads
+`/marketplace/<place>/` rather than a `/search/` path. §7 listed "does the
+payload appear on category and browse pages" as an open question; for browse it
+is now answered, and the answer is no.
+
+Ran the extractor's own logic against a live browse page, logged out, desktop
+user agent:
+
+| | Browse `/marketplace/sanfrancisco/` | Search `/marketplace/sanfrancisco/search/?query=desk` |
+|---|---|---|
+| `"listing":{` blocks found | 6 | ~15 |
+| …carrying `marketplace_listing_title` | **0** | all |
+| …carrying `listing_price` | **0** | all |
+| …carrying `primary_listing_photo` | **0** | all |
+| …carrying `creation_time` | 6 | all |
+| Rendered card anchors | **20** | 15 |
+| …with a full `aria-label` and an image | **20 of 20** | all |
+
+So the six blocks are not a thin payload, they are a different object: an id and
+a timestamp with no describable content attached. Six of them against twenty
+rendered cards, and none of the six is enough to draw a card with.
+
+The markup, meanwhile, is complete — every one of the twenty anchors carries the
+same `aria-label` shape the search tail is parsed from
+(`"Beanbag poufs, $5, San Francisco, CA, listing 1597932195222996"`).
+
+**Consequence.** `DiscoverFeed` reads the DOM and ignores the payload entirely.
+Discover cards therefore have no exact `creation_time`, no `delivery_types` and
+no sold state, and nothing downstream may assume otherwise — opening one
+enriches it from its item page like any other card. Category paths remain
+untested; assume the same until someone measures them.
+
+**One parsing bug fell out of this.** The browse feed spells a free listing's
+price `FREE`, where search results spell it `Free`. `DesktopCardParser` matched
+the exact string, so a browse card rendered with an em dash for its price and
+the word FREE stranded on the end of its title. Now matched
+case-insensitively — worth remembering as a general hazard: the two paths are
+different renderers and agree on shape, not on casing.

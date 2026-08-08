@@ -8,6 +8,7 @@ struct ResultsView: View {
     @EnvironmentObject private var distances: DistanceResolver
     @EnvironmentObject private var saved: SavedListings
     @EnvironmentObject private var viewed: ViewedListings
+    @EnvironmentObject private var discover: DiscoverFeed
 
     @State private var searchText = ""
     /// Whether the search field is presented. Only needed to tell a deliberate
@@ -155,6 +156,24 @@ struct ResultsView: View {
             .task {
                 distances.setUserLocation(DistanceResolver.origin(for: prefs.resolvedPlace, deviceFix: location.coordinate))
             }
+            // The home feed, loaded on arrival rather than on demand — it is
+            // the thing the user is meant to land in, so waiting for a gesture
+            // to start it would defeat the point. `loadIfNeeded` is what makes
+            // that affordable: coming back from a listing or the seller tab
+            // costs nothing.
+            .task { await loadDiscover() }
+            .onChange(of: prefs.locationSlug) { Task { await loadDiscover() } }
+            // Signing in changes the result set outright, here as everywhere.
+            .onChange(of: store.session) { Task { await loadDiscover() } }
+            .refreshable {
+                // The gesture means "get me a fresh version of this screen",
+                // and which screen that is depends on whether a search is up.
+                if store.query == nil {
+                    await loadDiscover(force: true)
+                } else {
+                    await rerunCurrentQuery()
+                }
+            }
         }
     }
 
@@ -233,51 +252,42 @@ struct ResultsView: View {
         }
     }
 
-    /// With an empty search bar, the home screen is what the user looked at and
-    /// what they kept.
+    /// With an empty search bar: what the user came back for, then something to
+    /// scroll.
     ///
-    /// Entirely local — every card here comes out of the profile store, which
-    /// is exactly why it can render with no network at all. Both saving and
-    /// opening write the card at the moment they happen, so neither list can
-    /// contain a row with nothing behind it.
+    /// The two personal sections are entirely local — every card in them comes
+    /// out of the profile store, which is why they render with no network at
+    /// all — and both are one row deep. That is what makes them affordable
+    /// above the fold: together they cost two rows and then hand the screen to
+    /// Discover, which is the part someone arriving with nothing saved and
+    /// nothing viewed is actually here for.
+    ///
+    /// Either personal section disappears when it's empty rather than showing a
+    /// placeholder. A new install therefore lands directly on Discover, and the
+    /// screen fills in from the top as the app gets used.
     @ViewBuilder
     private var home: some View {
         let savedItems = store.listings(for: saved.ids)
-        // Saved listings are excluded from the strip: they are already on this
-        // screen, in the grid below, and the same card twice is clutter rather
-        // than information. It also keeps `heroNamespace` ids unique across the
-        // screen, which `matchedGeometryEffect` requires — that part is a hard
-        // constraint rather than a preference, and holds whichever section is
-        // on top.
+        // Saved listings are excluded from the recent strip: the same card in
+        // two adjacent rails is clutter rather than information.
         let recentIDs = viewed.ids
             .filter { !saved.contains($0) }
             .prefix(ViewedListings.recentStripLength)
         let recentItems = store.listings(for: Array(recentIDs))
+        let discovered = winnowed(discover.listings, hidingViewed: false)
 
-        if savedItems.isEmpty && recentItems.isEmpty {
+        if savedItems.isEmpty, recentItems.isEmpty,
+           discovered.items.isEmpty, discover.listings.isEmpty, !discover.isLoading {
             EmptyStatePrompt(hasSavedNothing: saved.isEmpty)
         } else {
-            // Recently viewed first, then saved.
-            //
-            // The strip is one row deep and costs almost nothing at the top,
-            // where it catches the common case: coming back to something looked
-            // at a minute ago and not kept. Saved is the larger, browsable
-            // thing, and a staggered grid is happier as the section that runs
-            // to the bottom of the scroll than as a block wedged above a rail.
             VStack(alignment: .leading, spacing: 24) {
                 if !recentItems.isEmpty {
-                    recentlyViewed(recentItems)
+                    strip("Recently viewed", items: recentItems)
                 }
                 if !savedItems.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        sectionTitle("Saved")
-                        StaggeredGrid(items: savedItems, columns: 2, spacing: 12) { listing in
-                            ListingCard(listing: listing, namespace: heroNamespace)
-                                .onTapGesture { selected = listing }
-                        }
-                        .padding(.horizontal, 12)
-                    }
+                    strip("Saved", items: savedItems)
                 }
+                discoverSection(discovered)
             }
             .padding(.top, 4)
         }
@@ -289,15 +299,21 @@ struct ResultsView: View {
             .padding(.horizontal, 12)
     }
 
-    /// Everything opened lately, newest first.
+    /// A one-row rail of listings the app already has on disk.
     ///
-    /// A horizontal strip rather than a second grid, and that is what earns it
-    /// the top of the screen: it is a way back to something half-remembered
-    /// rather than a list to browse, so it does its whole job in one row and
-    /// hands the rest of the screen to Saved.
-    private func recentlyViewed(_ items: [Listing]) -> some View {
+    /// Both personal sections use it, and that similarity is the point: they
+    /// answer the same kind of question — "the thing I was just looking at",
+    /// "the thing I kept" — and both are a way *back* to a specific listing
+    /// rather than something to browse. A rail says that; a grid says "start
+    /// here", which is Discover's job now.
+    ///
+    /// `RecentCard` rather than `ListingCard` also keeps `heroNamespace` ids
+    /// unique across the screen, which `matchedGeometryEffect` requires: a
+    /// saved listing may perfectly well appear in Discover as well, and two
+    /// views claiming one id would break the transition into the detail view.
+    private func strip(_ title: String, items: [Listing]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Recently viewed")
+            sectionTitle(title)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(items) { listing in
@@ -306,6 +322,37 @@ struct ResultsView: View {
                     }
                 }
                 .padding(.horizontal, 12)
+            }
+        }
+    }
+
+    /// Whatever Facebook is showing for this place, with no search behind it.
+    ///
+    /// It runs to the bottom of the scroll, because it is the only section here
+    /// that can — the other two are bounded by what the user has done, and this
+    /// one is bounded by what Facebook served. The distance filter applies to it
+    /// exactly as it applies to search results: Facebook's default feed is a
+    /// recommendation surface first and a local one second, and reaches 35-40 mi
+    /// out even when the header claims otherwise
+    /// (`docs/mobile-location-radius-notes.md` §3).
+    @ViewBuilder
+    private func discoverSection(_ w: Winnowed) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Discover")
+            if w.items.isEmpty && discover.isLoading {
+                SkeletonGrid()
+            } else {
+                StaggeredGrid(items: w.items, columns: 2, spacing: 12) { listing in
+                    ListingCard(listing: listing, namespace: heroNamespace)
+                        .onTapGesture { selected = listing }
+                }
+                .padding(.horizontal, 12)
+                // Same reasoning as over a result set: cards removed on this
+                // device with nothing said about it are indistinguishable from
+                // a feed that came back thin.
+                if w.hiddenByDistance > 0 {
+                    hiddenNotice(w)
+                }
             }
         }
     }
@@ -328,10 +375,16 @@ struct ResultsView: View {
     /// Already-viewed goes first, so the distance count that reaches the user
     /// describes only cards they could otherwise have seen — counting the same
     /// listing under both headings would overstate what's being held back.
-    private var winnowed: Winnowed {
+    ///
+    /// `hidingViewed` is off for Discover. That filter means "only listings new
+    /// to me *in this search*", and a home feed nobody asked for is not a
+    /// search — silently emptying it because the user has been using the app
+    /// would be a strange reward for it. The seen marker on each card already
+    /// says which ones have been opened.
+    private func winnowed(_ listings: [Listing], hidingViewed: Bool = true) -> Winnowed {
         var result = Winnowed()
-        for listing in store.listings {
-            if hiddenAsViewed.contains(listing.id) {
+        for listing in listings {
+            if hidingViewed, hiddenAsViewed.contains(listing.id) {
                 result.hiddenAsViewed += 1
                 continue
             }
@@ -354,7 +407,7 @@ struct ResultsView: View {
 
     private var grid: some View {
         VStack(spacing: 0) {
-            let winnowed = winnowed
+            let winnowed = winnowed(store.listings)
             let items = winnowed.items
             StaggeredGrid(items: items, columns: 2, spacing: 12) { listing in
                 ListingCard(listing: listing, namespace: heroNamespace)
@@ -494,6 +547,14 @@ struct ResultsView: View {
     private func rerunCurrentQuery() async {
         guard let existing = store.query else { return }
         await run(existing.kind)
+    }
+
+    /// The same place every search uses, so Discover and a search from the home
+    /// screen are looking at the same city.
+    private func loadDiscover(force: Bool = false) async {
+        await discover.loadIfNeeded(citySlug: prefs.locationSlug ?? "sanfrancisco",
+                                    session: store.session,
+                                    force: force)
     }
 
     /// Location is an enhancement, never a gate: searching uses whatever

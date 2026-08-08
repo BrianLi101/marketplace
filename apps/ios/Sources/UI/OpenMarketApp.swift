@@ -10,6 +10,7 @@ struct OpenMarketApp: App {
     @StateObject private var saved = SavedListings.shared
     @StateObject private var viewed = ViewedListings.shared
     @StateObject private var seller = SellerToolsModel()
+    @StateObject private var discover = DiscoverFeed()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -22,6 +23,7 @@ struct OpenMarketApp: App {
                 .environmentObject(saved)
                 .environmentObject(viewed)
                 .environmentObject(seller)
+                .environmentObject(discover)
         }
         // Cache writes are coalesced on a 2s debounce, which is right for a
         // burst of writes and wrong for an app about to be killed. Leaving
@@ -45,6 +47,7 @@ struct RootView: View {
     @EnvironmentObject private var store: ListingStore
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var seller: SellerToolsModel
+    @EnvironmentObject private var discover: DiscoverFeed
 
     var body: some View {
         ZStack {
@@ -77,6 +80,8 @@ struct RootView: View {
             HiddenWebViewHost(webView: store.detail.webView)
                 .offset(x: 3000)
             HiddenWebViewHost(webView: seller.webView)
+                .offset(x: 3000)
+            HiddenWebViewHost(webView: discover.webView)
                 .offset(x: 3000)
         }
         .fullScreenCover(isPresented: .init(

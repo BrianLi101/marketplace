@@ -60,8 +60,14 @@ enum DesktopCardParser {
             segments.removeLast()
         }
 
+        // Case-insensitive on "free" because the surfaces disagree: a search
+        // result's label says "Free", the browse feed's says "FREE". Matching
+        // one spelling left the other unparsed, and a free listing then
+        // rendered with an em dash for a price and the word FREE stuck on the
+        // end of its title.
         var priceText: String?
-        if let candidate = segments.last, candidate.hasPrefix("$") || candidate == "Free" {
+        if let candidate = segments.last,
+           candidate.hasPrefix("$") || candidate.caseInsensitiveCompare("free") == .orderedSame {
             priceText = candidate
             segments.removeLast()
         }

@@ -291,6 +291,46 @@ can't price at all.
 
 ---
 
+## The home screen
+
+Three sections, top to bottom, and any of the first two disappears when it has
+nothing in it:
+
+**Recently viewed** and **Saved**, one horizontal rail each, both read entirely
+from disk. They answer the same kind of question — "the thing I was just looking
+at", "the thing I kept" — and both are a route back to one specific listing
+rather than something to browse, which is why they're rails: two rows, and then
+the screen belongs to something else.
+
+**Discover** is that something else: Facebook's own default feed for wherever
+the user is, with no search behind it. Before it existed, a new install landed
+on an empty state and a search field and had to think of something to type
+before the app would do anything at all.
+
+Three things about it are worth knowing:
+
+- **It has its own engine**, for the same reason the Seller tab does. Sharing
+  the browse tab's webview would mean the home feed and the user's first search
+  taking turns navigating one page. It costs one more idle webview and no extra
+  request budget — `RequestPacer` is shared.
+- **It is markup-only.** The embedded payload that makes desktop search worth
+  using is effectively absent on `/marketplace/<place>/`: six `"listing"` blocks
+  against twenty rendered cards, and not one of the six carried a title, a price
+  or a photo (`docs/embedded-payload.md` §8). The DOM was complete, 20 of 20. So
+  these cards have no exact timestamp, no delivery types and no sold state until
+  one is opened.
+- **The distance filter applies to it**, because Facebook's default feed is a
+  recommendation surface first and a local one second and reaches 35–40 mi out.
+  The "only new listings" filter does *not* — that one means "new to me in this
+  search", and quietly emptying a feed nobody asked for would be a strange
+  reward for using the app. The seen marker already says which cards have been
+  opened.
+
+Pull to refresh reloads whichever of the two screens is up: the discover feed on
+home, the current query over results.
+
+---
+
 ## The Seller tab
 
 The app has two tabs now. **Browse** is everything above. **Seller** takes a

@@ -16,6 +16,14 @@ struct SearchQuery: Equatable {
     enum Kind: Equatable {
         case search(String)
         case category(String)
+        /// No search term at all — Facebook's own default feed for a place.
+        ///
+        /// The one query the app makes that isn't asking for anything in
+        /// particular, which is exactly what makes it useful on the home
+        /// screen. It comes back thinner than a search does: the embedded
+        /// payload is effectively absent on this path (`DiscoverFeed`), so
+        /// these cards are markup-only.
+        case browse
     }
 
     /// Verified against result sets, not just parameter survival.
@@ -127,6 +135,7 @@ struct SearchQuery: Equatable {
         switch kind {
         case .search(let term): return term
         case .category(let name): return name
+        case .browse: return "Nearby"
         }
     }
 
@@ -142,6 +151,8 @@ struct SearchQuery: Equatable {
             items.append(URLQueryItem(name: "query", value: term))
         case .category(let name):
             components.path = "/marketplace/\(citySlug)/\(Self.categorySlug(name))/"
+        case .browse:
+            components.path = "/marketplace/\(citySlug)/"
         }
 
         if sort != .bestMatch {
