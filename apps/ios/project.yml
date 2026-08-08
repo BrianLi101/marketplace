@@ -38,12 +38,16 @@ targets:
         # keychain is an "Apple Development" one, and pinning the old string
         # leaves the build looking for an identity that doesn't exist.
         CODE_SIGN_IDENTITY: "Apple Development"
-        # CODE_SIGNING_ALLOWED is deliberately absent.
+        # On, and said out loud rather than left to the default.
         #
-        # It used to be pinned to NO so simulator builds ran unsigned, and that
+        # This was pinned to NO so simulator builds could run unsigned, and that
         # is precisely what produced "Sign the executable with a valid
         # certificate and provisioning profile": the build happily emits an
         # unsigned binary and then fails at the step that needs a signed one.
-        # Left unset, Xcode signs for a device and signs simulator builds
-        # locally, which is what both want.
+        # Nothing was wrong with the certificate or the profiles.
+        #
+        # YES is safe for both destinations — a device build signs against the
+        # team above, and a simulator build signs ad-hoc, which is what the
+        # simulator wants anyway.
+        CODE_SIGNING_ALLOWED: "YES"
         SWIFT_VERSION: "5.0"
