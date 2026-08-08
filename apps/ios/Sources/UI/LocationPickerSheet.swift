@@ -117,7 +117,7 @@ struct LocationPickerSheet: View {
     private var distanceSection: some View {
         Section {
             WrapLayout(spacing: 8) {
-                ForEach(Preferences.radiusOptions, id: \.self) { km in
+                ForEach(distanceOptions, id: \.self) { km in
                     distancePill("\(SearchQuery.kilometresToMiles(km)) mi", isOn: prefs.radiusKM == km) {
                         prefs.radiusKM = km
                     }
@@ -132,6 +132,19 @@ struct LocationPickerSheet: View {
             // result set can look emptier than the place suggests.
             Text("Applied on this device — Facebook ignores distance in a search.")
         }
+    }
+
+    /// The standard rungs, plus wherever the user actually is.
+    ///
+    /// "Try 15 mi" on the results screen sets a radius the ladder doesn't
+    /// contain, and a picker that couldn't show it would present every pill
+    /// unselected — reading as "no distance set" for a search that is very
+    /// much filtered. Inserting the current value keeps the control honest,
+    /// and it disappears again the moment a rung is chosen.
+    private var distanceOptions: [Int] {
+        let options = Preferences.radiusOptions
+        guard prefs.radiusKM > 0, !options.contains(prefs.radiusKM) else { return options }
+        return (options + [prefs.radiusKM]).sorted()
     }
 
     private func distancePill(_ text: String, isOn: Bool, action: @escaping () -> Void) -> some View {

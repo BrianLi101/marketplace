@@ -96,20 +96,39 @@ final class Preferences: ObservableObject {
     /// find things, close enough that collecting them is still plausible.
     static let defaultRadiusKM = 16
 
+    /// How far to reach out when the radius has hidden everything.
+    ///
+    /// Five miles rather than the ladder's next rung, which from 10 mi would be
+    /// a jump to 20 and from 40 a jump to 100. A search that comes up empty is
+    /// usually empty by a little, and the useful move is to look slightly
+    /// further — not to abandon the constraint that makes this a local browser.
+    static let widenStepMiles = 5
+
+    /// The radius to offer when everything nearby has been filtered out.
+    ///
+    /// Nil at "Any distance", where there is nothing to widen — though the
+    /// prompt can't arise there, since an unbounded radius hides nothing.
+    var widenedRadiusKM: Int? {
+        guard radiusKM > 0 else { return nil }
+        let miles = SearchQuery.kilometresToMiles(radiusKM) + Self.widenStepMiles
+        return SearchQuery.milesToKilometres(miles)
+    }
+
     static let suggestedCategories = ["Furniture", "Electronics", "Free Stuff", "Bikes", "Tools"]
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
-        // Snap to the nearest rung. The ladder changed from round kilometres to
-        // round miles, so a value stored under the old one — 20, say — matches
-        // no option and would leave the distance control showing nothing
-        // selected.
-        let storedRadius = defaults.object(forKey: Key.radiusKM) as? Int ?? Self.defaultRadiusKM
-        radiusKM = Self.radiusOptions.contains(storedRadius)
-            ? storedRadius
-            : Self.radiusOptions.min(by: { abs($0 - storedRadius) < abs($1 - storedRadius) })
-                ?? Self.defaultRadiusKM
+        // Stored as-is, off-ladder values included.
+        //
+        // This used to snap to the nearest rung, from a one-time migration when
+        // the ladder changed from round kilometres to round miles. That snap is
+        // now actively wrong: widening by five miles from the results screen
+        // produces values the ladder doesn't contain, and snapping would undo
+        // the user's last action the next time the app launched. The picker
+        // renders whatever is set (`LocationPickerSheet`), so nothing depends
+        // on the value being a rung any more.
+        radiusKM = defaults.object(forKey: Key.radiusKM) as? Int ?? Self.defaultRadiusKM
         hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
         locationName = defaults.string(forKey: Key.locationName)
         // Kept as-is, with no validation against a curated list any more.

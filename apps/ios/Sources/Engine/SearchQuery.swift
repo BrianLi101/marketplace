@@ -201,4 +201,13 @@ struct SearchQuery: Equatable {
     static func kilometresToMiles(_ km: Int) -> Int {
         Int((Double(km) * 0.621371).rounded())
     }
+
+    /// The inverse, for the places that think in miles because the user does.
+    ///
+    /// Round-trips stably across the range in use — 10 mi → 16 km → 10 mi,
+    /// 15 → 24 → 15, 25 → 40 → 25 — so a radius set in miles reads back as the
+    /// same number of miles rather than drifting a mile per conversion.
+    static func milesToKilometres(_ miles: Int) -> Int {
+        Int((Double(miles) / 0.621371).rounded())
+    }
 }

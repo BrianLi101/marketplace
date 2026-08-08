@@ -387,8 +387,17 @@ struct ResultsView: View {
                 if w.hiddenAsViewed > 0 {
                     Button("Show viewed") { prefs.hideViewed = false }
                 }
-                if w.hiddenByDistance > 0 {
-                    Button("Show any distance") { prefs.radiusKM = 0 }
+                // Widen a little, rather than abandoning the radius.
+                //
+                // This used to be "Show any distance", which set the radius to
+                // unbounded — one tap from a 10-mile search to results 90 miles
+                // out, and no way back except the filter sheet. A search is
+                // usually empty by a little, so the offer is to look a little
+                // further. Tapping again goes another five.
+                if w.hiddenByDistance > 0, let wider = prefs.widenedRadiusKM {
+                    Button("Try \(SearchQuery.kilometresToMiles(wider)) mi") {
+                        withAnimation(.easeOut(duration: 0.2)) { prefs.radiusKM = wider }
+                    }
                 }
             }
             .font(.subheadline.weight(.semibold))
