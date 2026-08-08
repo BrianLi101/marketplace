@@ -64,14 +64,39 @@ struct LocationPickerSheet: View {
 
     // MARK: - Sections
 
+    /// What the map centres on, in order of how much it actually tells you.
+    ///
+    /// The chosen place first. Failing that the device's own fix, which is the
+    /// most useful thing to look at while deciding — "Use my current location"
+    /// is right underneath, and the map is showing what it would pick.
+    ///
+    /// Last, San Francisco. Not arbitrary: `sanfrancisco` is the slug every
+    /// search falls back to with nothing set (`ResultsView.makeQuery`,
+    /// `SellerToolsModel.run`), so with no place and no fix, this is honestly
+    /// where searching would happen right now.
+    private var mapCentre: CLLocationCoordinate2D {
+        prefs.resolvedPlace?.coordinate
+            ?? location.coordinate
+            ?? CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
+    }
+
     @ViewBuilder
     private var currentSection: some View {
         Section {
+            // Always drawn, chosen place or not.
+            //
+            // The screen used to be a bare button until something had been
+            // picked, which is backwards: the map is most useful *before* the
+            // decision, when it can show where you are and therefore what
+            // "here" would mean. With nothing set it makes no claim — no
+            // circle — and simply orients.
+            LocationMapCard(place: prefs.resolvedPlace?.name ?? "no location",
+                            coordinate: mapCentre,
+                            precision: prefs.resolvedPlace == nil ? .unset : .city,
+                            userLocation: location.coordinate)
+                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
             if let place = prefs.resolvedPlace {
-                LocationMapCard(place: place.name, coordinate: place.coordinate,
-                                precision: .city,
-                                userLocation: location.coordinate)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                 // Just the name.
                 //
                 // This used to also print the URL segment and a "confirmed on

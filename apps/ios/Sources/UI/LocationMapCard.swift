@@ -30,6 +30,12 @@ struct LocationMapCard: View {
         /// before the item page loads. The listing is somewhere in the city,
         /// which is a far weaker claim and has to look like one.
         case city
+        /// Nothing has been chosen yet, so there is no area to draw.
+        ///
+        /// The map still renders — orientation is useful before a decision,
+        /// not only after one — but it makes no claim: no circle, because a
+        /// circle here would assert a search area that hasn't been set.
+        case unset
 
         /// Radius of the circle drawn for a city centroid, in metres. Still a
         /// guess — a city-sized blob, not a measurement, unlike `.listing`.
@@ -41,6 +47,7 @@ struct LocationMapCard: View {
             // invites the reader to imagine a street, and it's a district.
             case .listing: "Approximate area · within about 0.4 mi"
             case .city: "City only"
+            case .unset: "No location chosen yet"
             }
         }
     }
@@ -63,6 +70,9 @@ struct LocationMapCard: View {
         switch precision {
         case .listing: FacebookCoordinateGrid.worstCaseError(at: coordinate.latitude)
         case .city: precision.cityRadius
+        // Nothing is drawn at this size; it only sets the framing below, wide
+        // enough to read as a metro area rather than a street.
+        case .unset: 8_000
         }
     }
 
@@ -73,9 +83,11 @@ struct LocationMapCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Map(initialPosition: .region(region), interactionModes: []) {
-                MapCircle(center: coordinate, radius: areaRadius)
-                    .foregroundStyle(.tint.opacity(0.18))
-                    .stroke(.tint.opacity(0.55), lineWidth: 1)
+                if precision != .unset {
+                    MapCircle(center: coordinate, radius: areaRadius)
+                        .foregroundStyle(.tint.opacity(0.18))
+                        .stroke(.tint.opacity(0.55), lineWidth: 1)
+                }
 
                 if let userLocation {
                     // Drawn from the fix the app already holds rather than with
@@ -108,7 +120,7 @@ struct LocationMapCard: View {
     }
 
     private var accessibilityLabel: String {
-        let base = "\(precision.caption) around \(place)"
+        let base = precision == .unset ? precision.caption : "\(precision.caption) around \(place)"
         return userLocation == nil ? base : base + ", with your location shown"
     }
 
