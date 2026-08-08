@@ -76,6 +76,13 @@ final class SellerToolsModel: ObservableObject {
     @Published private(set) var searchTerm: String?
 
     private let search: ComparableSearch
+    /// Read from, never written to.
+    ///
+    /// Specifically: this tab must never call `prefs.recordSearch`. The terms it
+    /// searches are derived from whatever the user is drafting a listing for, so
+    /// recording them would seed the home screen's Discover section with the
+    /// thing they are trying to *sell* — and, on a shared device, put it in the
+    /// search suggestions too. Location and filters are all this reads.
     private let prefs: Preferences
     private var task: Task<Void, Never>?
 

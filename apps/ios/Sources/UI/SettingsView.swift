@@ -37,10 +37,14 @@ struct SettingsView: View {
                 // would show some other value as selected.
 
                 Section("History") {
+                    Toggle("Include searches in history", isOn: $prefs.recordSearchHistory)
                     Button("Clear search history") { prefs.recentSearches = [] }
                         .disabled(prefs.recentSearches.isEmpty)
                     Button("Clear viewing history") { viewed.clear() }
                         .disabled(viewed.isEmpty)
+                    Text("Search history fills the suggestions under the search field, and seeds Discover on the home screen. Turn it off to search without changing either — what's already saved stays until you clear it. Seller drafts never search into your history.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Text("Viewing history is what \"Only new listings\" filters against, and what fills Recently viewed. It stays on this device — Facebook is never told which listings you opened.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

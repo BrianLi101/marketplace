@@ -307,69 +307,41 @@ searches, re-run and shuffled together. Before it existed, a new install landed
 on an empty state and a search field and had to think of something to type
 before the app would do anything at all.
 
-### Why not Facebook's own feed
+Each search's results are shuffled *before* being cut to ten and the three are
+interleaved, so Discover is a random sample of three searches rather than their
+top rows — which the user could have got by running them. The seed terms are
+printed under the heading, because a shuffled feed with no stated basis is
+indistinguishable from a random one.
 
-The first version of Discover loaded `/marketplace/<place>/` — "Today's picks" —
-and it was a bad recommendation surface. Three loads of the identical URL in one
-session:
+**Facebook's own "Today's picks" was tried first and rejected on measurement:**
+three loads of one URL in a single session shared 0 of 5 top cards between the
+first and second and 17 of 20 between the second and third, with the geography
+swinging from mostly-San-Francisco to an East Bay spread reaching Napa. A
+rotating popularity pool, not a ranking — and logged out there is little to
+personalise it with anyway.
 
-| | vs previous load |
-|---|---|
-| load 1 → 2 | **0 of 5** top cards survived |
-| load 2 → 3 | 17 of 20 overlapped |
-| load 4 | reverted to load 1's contents |
-
-The geography swung with it, from 9-of-20 in San Francisco to an East Bay spread
-reaching Napa and Antioch, 50 mi out. It reads as a couple of cached popularity
-pools being alternated rather than a ranking — and logged out there is little for
-Facebook to personalise it *with*: an IP, an anonymous cookie, and whatever item
-pages that cookie has opened. (The plumbing does allow the last of those: every
-engine shares one persistent `WKWebsiteDataStore`, so opening a listing is
-visible to Facebook. Whether it feeds the picks is untested — the feed's own
-churn is far larger than the effect a test would be looking for.)
-
-The app knows more than that, and knows it locally. What Discover gives up is
-novelty: it cannot show you something in a category you have never asked about.
-That is the trade — relevance over surprise, from signals that never leave the
-device.
-
-### How it's built
-
-- **Up to three searches**, seeded from `recentSearches`, newest first. A new
-  install has none, so it falls back to the same suggested categories the search
-  field offers, shuffled.
-- **A random sample of each**, not the top of each: results are shuffled
-  *before* being cut to ten, or Discover would just be the first rows of three
-  searches — which the user could have got by running them.
-- **Round-robin across the three**, so the mix is visible in the first row
-  rather than being three blocks stacked up.
-- **The user's own filters**, exactly as a search would apply them. A Discover
-  that ignored their delivery method or price range would show them results
-  their own search wouldn't.
-- **Its own engine**, for the same reason the Seller tab has one. Sharing the
-  browse tab's webview would mean the home feed and the user's first search
-  taking turns navigating one page.
-
-### What invalidates it
-
-Two things: **relaunching the app, and pulling to refresh.** Nothing else — not
-running a search, not changing city, not signing in. It is three page loads and
-it is deliberately a shuffle, so rebuilding it under someone who is halfway down
-it is worse than letting it be an hour old. Nothing is written to disk either:
-restoring a shuffle from yesterday and presenting it as today's would be a lie
-the cache tells for free.
-
-The cost is honest and worth stating: a cold start does three sequential page
-loads before the feed is complete. It fills progressively — a batch at a time,
-with a spinner under the grid — rather than holding a skeleton for the whole run.
+**It rebuilds on exactly two events: relaunching the app, and pulling to
+refresh.** Not on a new search — recent searches are the seed, so every search
+would throw away the feed the user is about to return to. Nothing is written to
+disk, so a cold start does three sequential page loads, filling a batch at a
+time.
 
 The distance filter applies, as it does to search results. The "only new
 listings" filter does *not* — that one means "new to me in this search", and
 quietly emptying a feed nobody asked for would be a strange reward for using the
-app. The seen marker already says which cards have been opened.
+app.
 
-Pull to refresh reloads whichever of the two screens is up: Discover on home, the
-current query over results.
+Full design, the measurements behind it, the open issues, and what breaks if
+Discover ever holds older cards: **`docs/discover.md`**.
+
+### Search history is a home-screen input now
+
+Seeding Discover from `recentSearches` changed what recording a search means —
+anything searched once becomes the home screen until it ages out. So Settings →
+History carries **"Include searches in history"**, and the **Seller tab never
+records**: its terms come from whatever the user is drafting a listing for, and
+recording them would fill the home screen with the thing they're trying to sell.
+Both rules live in `Preferences.recordSearch` rather than at the call sites.
 
 ---
 
@@ -773,6 +745,7 @@ item — several of these are harder or easier than they look. Items marked
 | `docs/filter-parameters.md` | Every sort/filter parameter, which surface honours it, and what's measured |
 | `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isnt worth calling |
 | `docs/logged-in-findings.md` | What a signed-in session changes: seller identity yes, structured depth no |
+| `docs/discover.md` | The home screen feed: how it's seeded, why Facebook's own picks were rejected, its open issues, and what breaks if it ever holds older cards |
 | **`docs/location.md`** | **Everything about location, both surfaces — start here.** What Facebook accepts, why a refusal is silent, the coordinate route, the verification protocol, the fuzz lattice, and where distances are measured from |
 | `docs/location-targeting.md` | The raw desktop session record: slugs vs place ids, and the §5a/§5b correction that found the coordinate route |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |

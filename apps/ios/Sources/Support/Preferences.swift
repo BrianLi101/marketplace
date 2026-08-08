@@ -9,6 +9,7 @@ final class Preferences: ObservableObject {
 
     private enum Key {
         static let recentSearches = "recentSearches"
+        static let recordSearchHistory = "recordSearchHistory"
         static let radiusKM = "radiusKM"
         static let hasSeenFirstRun = "hasSeenFirstRun"
         static let locationName = "locationName"
@@ -27,6 +28,18 @@ final class Preferences: ObservableObject {
     private let defaults: UserDefaults
 
     @Published var recentSearches: [String] { didSet { defaults.set(recentSearches, forKey: Key.recentSearches) } }
+    /// Whether a search the user runs is added to that list.
+    ///
+    /// It stopped being a private matter between the search field and its own
+    /// suggestions the moment Discover started seeding from it: history is now
+    /// the thing that decides what fills the home screen, so anything searched
+    /// once shows up there until it ages out. Someone looking for a gift, or for
+    /// something they'd rather not see on the first screen of the app, needs a
+    /// way to run that search without it becoming the wallpaper.
+    ///
+    /// Off does not clear anything — existing history stays until cleared
+    /// explicitly, which is the honest reading of "stop recording".
+    @Published var recordSearchHistory: Bool { didSet { defaults.set(recordSearchHistory, forKey: Key.recordSearchHistory) } }
     @Published var radiusKM: Int { didSet { defaults.set(radiusKM, forKey: Key.radiusKM) } }
     @Published var hasSeenFirstRun: Bool { didSet { defaults.set(hasSeenFirstRun, forKey: Key.hasSeenFirstRun) } }
     /// Human-readable place name for the UI ("San Francisco, CA").
@@ -119,6 +132,11 @@ final class Preferences: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         recentSearches = defaults.stringArray(forKey: Key.recentSearches) ?? []
+        // Defaults on, and `object(forKey:)` is what makes that possible —
+        // `bool(forKey:)` returns false for a key that was never written, which
+        // would silently ship history recording turned off for every existing
+        // install.
+        recordSearchHistory = defaults.object(forKey: Key.recordSearchHistory) as? Bool ?? true
         // Stored as-is, off-ladder values included.
         //
         // This used to snap to the nearest rung, from a one-time migration when
@@ -213,7 +231,22 @@ final class Preferences: ObservableObject {
         lastQueryValue = nil
     }
 
+    /// Records a search the *user* ran, for the suggestions list and for
+    /// Discover's seeds.
+    ///
+    /// Two things never reach here, and both are deliberate:
+    ///
+    /// * **Anything the Seller tab searches.** Those terms are derived from the
+    ///   item someone is drafting a listing for — they are the app asking a
+    ///   question on the user's behalf, not the user looking for something to
+    ///   buy. Seeding Discover with them would fill the home screen with the
+    ///   thing you are trying to sell, which is precisely backwards.
+    ///   `SellerToolsModel` reads `Preferences` for location and filters and
+    ///   never calls this.
+    /// * **Anything at all, when `recordSearchHistory` is off.** Enforced here
+    ///   rather than at the call site so a future caller can't forget.
     func recordSearch(_ term: String) {
+        guard recordSearchHistory else { return }
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         var next = recentSearches.filter { $0.caseInsensitiveCompare(trimmed) != .orderedSame }
