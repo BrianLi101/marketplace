@@ -148,10 +148,17 @@ final class DiscoverFeed: ObservableObject {
         for task in tasks {
             buckets.append(await task.value)
         }
+        let mixed = Self.interleave(buckets)
+        // Every place geocoded before the feed is published, so the distance
+        // filter has already run by the time anything is drawn and the grid
+        // can't shrink underneath a reader (`DistanceResolver.resolveAll`).
+        // Part of the same fill for the same reason the searches are: this
+        // screen shows nothing until all of it is ready.
+        await DistanceResolver.shared.resolveAll(mixed.map(\.locationText))
         // Replaced in one assignment, which is also what keeps a pull-to-refresh
         // honest: the old cards stay exactly where they are until the whole new
         // feed is ready to take their place.
-        listings = Self.interleave(buckets)
+        listings = mixed
         Logger.discover.info("\(self.listings.count, privacy: .public) cards from \(seeds.count, privacy: .public) searches")
     }
 

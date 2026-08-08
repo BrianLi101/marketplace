@@ -117,6 +117,36 @@ nothing observable from outside can rule that out.
 Coordinates are **per item page only**. Feed cards never carry them, so
 card-level distance still has to come from geocoding the city name.
 
+**Those lookups happen in one batch, before a result set is published.** They
+used to run through a trickle queue — one geocode every 250 ms, started by each
+card's own `.task` — and the distance filter can only remove a card once it
+knows where the card is, so the grid was drawn full and then visibly shrank for
+several seconds afterwards. `LazyVStack` made it worse: a card only asks for its
+lookup when it is built, near the viewport, so the shrinking followed the user
+down the page as they scrolled. Measured on "anthurium", San Francisco, newest
+first: 24 cards drawn, 19 of them removed one at a time.
+
+Batching it costs almost nothing, because the one-request-at-a-time rule belongs
+to a `CLGeocoder` *instance* rather than to the service:
+
+| Twelve Bay Area city names | |
+|---|---|
+| Trickle queue, 250 ms gap | ~4 s |
+| Four serial, no gap | 439 ms |
+| **Twelve concurrent, one geocoder each** | **205 ms** |
+
+So `DistanceResolver.resolveAll` runs eight at a time and is awaited immediately
+before every publish. The same anthurium search now geocodes 11 new places in
+413 ms and draws five cards, once. The place cache persists across launches, so
+after a search or two in a metro area the batch is a no-op.
+
+**What this can't fix is enumerating a region in advance.** Seeding the cache
+with nearby townships when the location is set would make even the first search
+free, but no Apple API lists the municipalities inside a region: `MKLocalSearch`
+for "city" in an 80 km box around San Francisco returns *San Diego*, 739 km
+away, and "town" returns Town Creek, Alabama. It is a name search, not an
+administrative-area query.
+
 That point is also what the detail screen routes against: `MapKitTravelTime`
 asks Apple for a walking, driving and transit ETA from the device's own fix
 (`MKDirections.calculateETA`). **Both ends have to be real or the row doesn't

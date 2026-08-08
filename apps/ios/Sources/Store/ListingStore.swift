@@ -28,6 +28,10 @@ final class ListingStore: ObservableObject {
     private let prefs: Preferences
     private let metrics: MetricsReporter
     private let cache: ListingCache
+    /// The shared one, deliberately — the grid, the saved shelf and the detail
+    /// screen all read distances from it, and a second instance would give them
+    /// different answers from a different cache.
+    private let distances = DistanceResolver.shared
     private var seenIDs = Set<String>()
     /// True while the grid is showing last session's cards. They render on the
     /// first frame, but their `cardIndex` refers to a DOM that no longer
@@ -114,10 +118,10 @@ final class ListingStore: ObservableObject {
         }
 
         let payload = await desktop.load(query)
-        ingest(payload: payload)
+        await ingest(payload: payload)
         // The payload covers the first page only; anything else already
         // rendered has to be read from the DOM.
-        ingest(cards: await desktop.renderedCards())
+        await ingest(cards: await desktop.renderedCards())
         isLoadingFirstPage = false
         cache.saveResults(listings, for: query, session: session)
     }
@@ -148,7 +152,7 @@ final class ListingStore: ObservableObject {
         let before = listings.count
         for _ in 0..<3 {
             guard await desktop.scrollOnce() else { break }
-            ingest(cards: await desktop.renderedCards())
+            await ingest(cards: await desktop.renderedCards())
         }
         if listings.count == before {
             Logger.store.info("loadMore: no new cards")
@@ -173,28 +177,35 @@ final class ListingStore: ObservableObject {
     /// Runs before `ingest(cards:)` on a fresh search so the richest version of
     /// each listing lands first and the DOM pass can only fill gaps, never
     /// overwrite. Both are idempotent on listing identity.
-    private func ingest(payload: [PayloadListing]) {
+    private func ingest(payload: [PayloadListing]) async {
         guard !payload.isEmpty else { return }
         let listingsFromPayload = payload.enumerated().map { index, item in
             item.makeListing(cardIndex: index)
         }
-        absorb(listingsFromPayload, replacingCache: isShowingCachedResults)
+        await absorb(listingsFromPayload, replacingCache: isShowingCachedResults)
     }
 
     /// The markup tail — everything past the first page, plus anything rendered
     /// that the payload didn't describe.
-    private func ingest(cards: [DesktopRawCard]) {
+    private func ingest(cards: [DesktopRawCard]) async {
         guard !cards.isEmpty else { return }
         var parsed: [Listing] = []
         for (index, card) in cards.enumerated() {
             guard let listing = DesktopCardParser.parse(card, cardIndex: index) else { continue }
             parsed.append(listing)
         }
-        absorb(parsed, replacingCache: isShowingCachedResults && !parsed.isEmpty)
+        await absorb(parsed, replacingCache: isShowingCachedResults && !parsed.isEmpty)
     }
 
     /// Merges a batch into the grid: new listings append, known ones fill gaps.
-    private func absorb(_ incoming: [Listing], replacingCache: Bool) {
+    ///
+    /// Async only for the last thing it does before publishing: geocoding every
+    /// place name in the batch, so the grid arrives at its final size instead of
+    /// shrinking for the next several seconds as distances land
+    /// (`DistanceResolver.resolveAll`). This is the right place for it because
+    /// it is the *only* place listings become visible — the payload pass, the
+    /// markup pass, pagination and the WebLite path all funnel through here.
+    private func absorb(_ incoming: [Listing], replacingCache: Bool) async {
         // The first live cards replace the restored ones outright rather than
         // merging into them, and the replacement is one assignment at the end —
         // never a clear followed by a refill. `listings` is `@Published` and the
@@ -234,13 +245,19 @@ final class ListingStore: ObservableObject {
             fresh.append(seeded)
         }
 
+        guard !fresh.isEmpty else { return }       // keep whatever is on screen
+
+        // Before anything is published, never after. Everything below this line
+        // is an assignment to `@Published` state and therefore a frame the user
+        // sees, and the point of the batch is that the distance filter has
+        // already run by the time they see it.
+        await distances.resolveAll(fresh.map(\.locationText))
+
         if replacingCache {
-            guard !fresh.isEmpty else { return }   // keep the restored grid
             isShowingCachedResults = false
             counts.rendered = fresh.count
             listings = fresh                       // one assignment, never empty
         } else {
-            guard !fresh.isEmpty else { return }
             counts.rendered = listings.count + fresh.count
             listings.append(contentsOf: fresh)
         }
@@ -302,8 +319,13 @@ final class ListingStore: ObservableObject {
             fresh.append(seeded)
         }
 
+        guard !fresh.isEmpty else { return }       // keep the restored grid
+
+        // Same rule as the desktop path: every distance known before anything
+        // is drawn, so the grid can't resize itself afterwards.
+        await distances.resolveAll(fresh.map(\.locationText))
+
         if isReplacingCached {
-            guard !fresh.isEmpty else { return }   // keep the restored grid
             isShowingCachedResults = false
             counts.rendered = fresh.count
             listings = fresh                       // one assignment, never empty
