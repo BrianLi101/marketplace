@@ -3,7 +3,7 @@ import WebKit
 import os
 
 extension Logger {
-    static let seller = Logger(subsystem: "com.brianli101.marketplace", category: "seller")
+    static let seller = Logger(subsystem: "lol.frens.openmarket", category: "seller")
 }
 
 /// One listing being used as evidence about price.

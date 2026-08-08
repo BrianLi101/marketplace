@@ -2,7 +2,7 @@ import Foundation
 import os
 
 extension Logger {
-    static let cache = Logger(subsystem: "com.brianli101.marketplace", category: "cache")
+    static let cache = Logger(subsystem: "lol.frens.openmarket", category: "cache")
 }
 
 /// Everything known about one listing: the card as the grid saw it, plus the

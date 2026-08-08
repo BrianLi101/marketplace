@@ -3,7 +3,7 @@ import WebKit
 import os
 
 extension Logger {
-    static let detail = Logger(subsystem: "com.brianli101.marketplace", category: "detail")
+    static let detail = Logger(subsystem: "lol.frens.openmarket", category: "detail")
 }
 
 /// Webview B — the fallback path to an item page, plus the session cache.

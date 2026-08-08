@@ -3,7 +3,7 @@ import WebKit
 import os
 
 extension Logger {
-    static let desktop = Logger(subsystem: "com.brianli101.marketplace", category: "desktop")
+    static let desktop = Logger(subsystem: "lol.frens.openmarket", category: "desktop")
 }
 
 /// Search on the desktop surface, reading the GraphQL payload Facebook embeds

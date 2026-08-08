@@ -3,7 +3,7 @@ import WebKit
 import os
 
 extension Logger {
-    static let feed = Logger(subsystem: "com.brianli101.marketplace", category: "feed")
+    static let feed = Logger(subsystem: "lol.frens.openmarket", category: "feed")
 }
 
 /// Webview A — owns the results page, its pagination state, and the item pages

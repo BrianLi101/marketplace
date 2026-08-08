@@ -4,7 +4,7 @@ import WebKit
 import os
 
 extension Logger {
-    static let place = Logger(subsystem: "com.brianli101.marketplace", category: "place")
+    static let place = Logger(subsystem: "lol.frens.openmarket", category: "place")
 }
 
 /// Turns a coordinate into a place Facebook recognises, by asking Facebook.

@@ -34,7 +34,7 @@ struct ParseHealth: Equatable {
 
 final class LocalMetrics: MetricsReporter {
     static let shared = LocalMetrics()
-    private let log = Logger(subsystem: "com.brianli101.marketplace", category: "metrics")
+    private let log = Logger(subsystem: "lol.frens.openmarket", category: "metrics")
 
     private(set) var latestHealth = ParseHealth()
     private(set) var loginWallCount = 0

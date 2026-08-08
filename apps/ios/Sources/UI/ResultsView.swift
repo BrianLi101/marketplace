@@ -45,7 +45,7 @@ struct ResultsView: View {
                 }
             }
             .scrollDismissesKeyboard(.immediately)
-            .navigationTitle("Marketplace")
+            .navigationTitle("Open Market")
             .navigationBarTitleDisplayMode(.inline)
             // Pinned under the title rather than left to `.automatic`, which on
             // iOS 26 floats it at the bottom of the screen. Searching is the

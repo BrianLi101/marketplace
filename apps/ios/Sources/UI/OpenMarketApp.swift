@@ -2,7 +2,7 @@ import SwiftUI
 import WebKit
 
 @main
-struct MarketplaceApp: App {
+struct OpenMarketApp: App {
     @StateObject private var store = ListingStore()
     @StateObject private var prefs = Preferences.shared
     @StateObject private var location = LocationProvider()

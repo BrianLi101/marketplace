@@ -1,21 +1,37 @@
-name: Marketplace
+name: OpenMarket
 options:
-  bundleIdPrefix: com.brianli101
+  bundleIdPrefix: lol.frens
   deploymentTarget:
     iOS: "17.0"
 targets:
-  Marketplace:
+  OpenMarket:
     type: application
     platform: iOS
     sources: [Sources]
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.brianli101.marketplace
-        PRODUCT_NAME: Marketplace
+        PRODUCT_BUNDLE_IDENTIFIER: lol.frens.openmarket
+        PRODUCT_NAME: OpenMarket
+        # The name under the icon, which is the only one a user reads. Kept
+        # separate from PRODUCT_NAME so the bundle and scheme can stay a single
+        # token while the app presents as two words.
+        INFOPLIST_KEY_CFBundleDisplayName: "Open Market"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Used to centre your search on your area, and to estimate how long it takes to reach a listing. Your location never leaves your device."
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         TARGETED_DEVICE_FAMILY: "1"
+        # Signing lives here, not in Xcode.
+        #
+        # This project is generated: `xcodegen generate` rewrites the .xcodeproj
+        # wholesale from this file, so anything set through Xcode's Signing &
+        # Capabilities pane survives exactly until the next regenerate. A team
+        # set that way was silently lost once already, and took the bundle
+        # identifier with it — which is worse than it sounds, because the build
+        # still succeeds and installs, just under a different app.
+        #
+        # Uncomment with the Friendly Labs team id to sign. Signing is off for
+        # now, which is what lets simulator builds run unsigned.
+        # DEVELOPMENT_TEAM: XXXXXXXXXX
         CODE_SIGNING_ALLOWED: "NO"
         SWIFT_VERSION: "5.0"

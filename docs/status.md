@@ -1,7 +1,7 @@
 # Build status — 2026-07-31
 
 App lives in `apps/ios/` (xcodegen; `xcodegen generate` then build the
-`Marketplace` scheme). Probe harness in `tools/probe/`, with its own README. Feasibility record in
+`OpenMarket` scheme). Probe harness in `tools/probe/`, with its own README. Feasibility record in
 `feasibility-2026-07-31.md`. Which Facebook surface to route through, and why —
 including the desktop login modal — is analysed in `surface-strategy.md`.
 How the mobile site handles location, radius and result quality (and why the

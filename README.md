@@ -1,4 +1,4 @@
-# Marketplace (working title)
+# Open Market
 
 A native iOS app for browsing local Facebook Marketplace listings without
 signing in. SwiftUI renders everything the user sees; a hidden `WKWebView` is
@@ -10,7 +10,7 @@ describe something you own and it finds what similar things are listed for near
 you, what has actually sold, and what to ask.
 
 ```
-apps/ios/       the app (xcodegen: `xcodegen generate`, then build the Marketplace scheme)
+apps/ios/       the app (xcodegen: `xcodegen generate`, then build the OpenMarket scheme)
 apps/backend/   placeholder — runtime not chosen yet, see its README
 tools/probe/    harness for measuring the live site; every finding below came from it
 docs/           findings and decisions, listed at the bottom

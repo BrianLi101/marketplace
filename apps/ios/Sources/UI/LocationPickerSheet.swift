@@ -197,7 +197,7 @@ struct LocationPickerSheet: View {
         defer { pending = nil }
         guard let coordinate = await location.resolveOnce() else {
             failure = location.isDenied
-                ? "Location is off for Marketplace. Turn it on in Settings."
+                ? "Location is off for Open Market. Turn it on in Settings."
                 : "Couldn't get a location fix."
             return
         }

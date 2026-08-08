@@ -3,7 +3,7 @@ import SwiftUI
 import os
 
 extension Logger {
-    static let store = Logger(subsystem: "com.brianli101.marketplace", category: "store")
+    static let store = Logger(subsystem: "lol.frens.openmarket", category: "store")
 }
 
 /// Owns what the grid shows: dedupe, filtering, paging, and the parse-health
