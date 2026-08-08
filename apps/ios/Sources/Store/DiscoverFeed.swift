@@ -28,11 +28,17 @@ import os
 /// it a new install's home screen was a hardcoded category list searched in a
 /// hardcoded city.
 ///
-/// **Its own engine**, for the reason `ComparableSearch` has one: sharing the
-/// browse tab's would mean the home feed and the user's first search taking
-/// turns navigating one webview. It costs no extra request budget —
-/// `RequestPacer` is a shared actor — but it does cost `searchCount` page loads
-/// per fill, which is why the fill happens once.
+/// **Its own engines**, one per search, for the reason `ComparableSearch` has
+/// one: sharing the browse tab's would mean the home feed and the user's first
+/// search taking turns navigating one webview. One each means the searches
+/// overlap instead of queueing, so a fill is about as long as its slowest page
+/// rather than the sum of three. No extra request budget either — `RequestPacer`
+/// is a shared actor and still spaces the starts.
+///
+/// **A fill publishes once, when all of it is in.** The grid used to arrive in
+/// three instalments and reflow twice under whoever was reading it. Cards moving
+/// out from under a thumb is the one thing a feed must not do, and staging the
+/// wait made it look longer than it was.
 ///
 /// **Session-scoped, and nothing is written to disk.** The feed survives moving
 /// between tabs and opening listings, and is rebuilt only when the app is
@@ -77,16 +83,29 @@ final class DiscoverFeed: ObservableObject {
     /// which the user could have got by running them.
     static let perSearch = 10
 
-    private let engine: DesktopFeedEngine
+    /// One engine per search, so the searches can run at the same time.
+    ///
+    /// They can't share one. An engine is a single `WKWebView` with a single
+    /// in-flight navigation, and the markup fallback reads whatever document is
+    /// currently loaded in it — three concurrent searches through one engine
+    /// would be three navigations fighting over one page and reading each
+    /// other's cards.
+    ///
+    /// The cost is two more hidden webviews resident for the app's lifetime.
+    /// Worth it: a fill was three page loads end to end, and the screen has
+    /// nothing to show until it finishes, so that time was the entire wait on
+    /// the home screen. Concurrent, it is roughly one load. No extra request
+    /// budget either — `RequestPacer` is shared and still spaces the starts.
+    private let engines: [DesktopFeedEngine]
     private let prefs: Preferences
     private var hasLoaded = false
 
-    /// Has to be in the view hierarchy for WebKit to render it — see
-    /// `RootView`. Same constraint as every other engine.
-    var webView: WKWebView { engine.webView }
+    /// All of them have to be in the view hierarchy for WebKit to render them —
+    /// see `RootView`. Same constraint as every other engine.
+    var webViews: [WKWebView] { engines.map(\.webView) }
 
-    init(engine: DesktopFeedEngine? = nil, prefs: Preferences = .shared) {
-        self.engine = engine ?? DesktopFeedEngine()
+    init(engines: [DesktopFeedEngine]? = nil, prefs: Preferences = .shared) {
+        self.engines = engines ?? (0..<Self.searchCount).map { _ in DesktopFeedEngine() }
         self.prefs = prefs
     }
 
@@ -109,20 +128,30 @@ final class DiscoverFeed: ObservableObject {
         let seeds = Self.seeds(recent: prefs.recentSearches, interests: prefs.chosenInterests)
         self.seeds = seeds
 
-        // Published after each search rather than at the end, so the screen
-        // fills as it goes instead of showing a skeleton for three sequential
-        // page loads. Positions shift while that happens, which is what a feed
-        // arriving looks like; once the last search lands the order is fixed
-        // until the next refresh.
+        // All searches at once, one engine each, and nothing is published until
+        // every one of them is back.
         //
-        // The existing cards are left alone until the first new batch replaces
-        // them, so a pull-to-refresh never blanks the screen it is refreshing.
-        var buckets: [[Listing]] = []
-        var seen = Set<String>()
-        for seed in seeds {
-            buckets.append(await batch(for: seed.term, citySlug: citySlug, excluding: &seen))
-            listings = Self.interleave(buckets)
+        // This used to run them one after another and republish after each, so
+        // the grid arrived in three instalments and reflowed twice under
+        // whoever was already reading it. Cards moved out from under a thumb —
+        // which is the one thing a feed must not do — and it made the wait
+        // *look* longer than it was by drawing attention to each stage of it.
+        //
+        // `Task {}` inherits this actor, so the three bodies interleave at their
+        // awaits rather than running truly in parallel: the page loads overlap,
+        // which is where the time goes, and nothing touches shared state
+        // concurrently.
+        let tasks = zip(seeds, engines).map { seed, engine in
+            Task { await self.batch(for: seed.term, using: engine, citySlug: citySlug) }
         }
+        var buckets: [[Listing]] = []
+        for task in tasks {
+            buckets.append(await task.value)
+        }
+        // Replaced in one assignment, which is also what keeps a pull-to-refresh
+        // honest: the old cards stay exactly where they are until the whole new
+        // feed is ready to take their place.
+        listings = Self.interleave(buckets)
         Logger.discover.info("\(self.listings.count, privacy: .public) cards from \(seeds.count, privacy: .public) searches")
     }
 
@@ -179,11 +208,21 @@ final class DiscoverFeed: ObservableObject {
         }
     }
 
-    /// One search's contribution: a random sample of its results, minus
-    /// anything already taken by an earlier search in this fill.
+    /// One search's contribution: a random sample of its results.
+    ///
+    /// Takes its engine rather than reaching for a shared one, because the
+    /// markup fallback below reads the document that engine is *currently*
+    /// showing — the one thing that would go wrong if these ran concurrently
+    /// through one webview.
+    ///
+    /// Cross-search dedupe is not done here any more. It can't be: the searches
+    /// no longer finish in a defined order, so a set threaded through them would
+    /// decide which of two identical cards survives by whichever page happened
+    /// to load first. `interleave` does it instead, in seed order, where the
+    /// answer is the same every time.
     private func batch(for term: String,
-                       citySlug: String,
-                       excluding seen: inout Set<String>) async -> [Listing] {
+                       using engine: DesktopFeedEngine,
+                       citySlug: String) async -> [Listing] {
         let payload = await engine.load(query(for: term, citySlug: citySlug))
         var parsed = payload.enumerated().map { index, item in item.makeListing(cardIndex: index) }
         // Same fallback as everywhere else: a page served entirely client-side
@@ -194,16 +233,11 @@ final class DiscoverFeed: ObservableObject {
                 .compactMap { index, card in DesktopCardParser.parse(card, cardIndex: index) }
         }
 
-        var kept: [Listing] = []
-        for listing in parsed {
-            // Ships-only cards are not what a local marketplace's home screen is
-            // for. Only the markup path sets this badge, so it catches the tail
-            // rather than everything — the query's delivery filter is what does
-            // the real work when the user has one set.
-            guard listing.badgeText != "Ships" else { continue }
-            guard seen.insert(listing.id).inserted else { continue }
-            kept.append(listing)
-        }
+        // Ships-only cards are not what a local marketplace's home screen is
+        // for. Only the markup path sets this badge, so it catches the tail
+        // rather than everything — the query's delivery filter is what does the
+        // real work when the user has one set.
+        let kept = parsed.filter { $0.badgeText != "Ships" }
         return Array(kept.shuffled().prefix(Self.perSearch))
     }
 
@@ -234,12 +268,19 @@ final class DiscoverFeed: ObservableObject {
     /// row rather than being three blocks stacked on each other. Each bucket is
     /// already shuffled, so this is a mixed sample and not an interleaved
     /// ranking.
+    ///
+    /// Also where a listing found by two searches is dropped — first occurrence
+    /// wins, and "first" is by seed order, so the result doesn't depend on which
+    /// page finished loading first.
     static func interleave(_ buckets: [[Listing]]) -> [Listing] {
         var out: [Listing] = []
+        var seen = Set<String>()
         let depth = buckets.map(\.count).max() ?? 0
         for index in 0..<depth {
             for bucket in buckets where index < bucket.count {
-                out.append(bucket[index])
+                let listing = bucket[index]
+                guard seen.insert(listing.id).inserted else { continue }
+                out.append(listing)
             }
         }
         return out

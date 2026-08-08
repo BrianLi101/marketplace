@@ -40,14 +40,25 @@ actor RequestPacer {
             guard wait < 15 else { return false }   // don't hold the UI on a long backoff
             try? await Task.sleep(for: .seconds(wait))
         }
-        if let last = lastRequest {
-            let gap = Date().timeIntervalSince(last)
-            if gap < Self.minimumGap {
-                try? await Task.sleep(for: .seconds(Self.minimumGap - gap))
-            }
-        }
-        lastRequest = Date()
+        // The slot is claimed *before* the wait, not after it.
+        //
+        // Sleeping first and stamping afterwards works for one caller at a time
+        // and silently stops working the moment there are several: `await`
+        // inside an actor method lets the next call in, so every concurrent
+        // caller measured its gap against the same `lastRequest`, slept the
+        // same amount, and fired together — a burst, which is the one thing
+        // this exists to prevent. Measured when Discover started running its
+        // three searches at once: two of the three left at the same
+        // millisecond.
+        //
+        // Reserving the time up front makes each caller queue behind the last
+        // reservation instead of behind the last departure.
+        let now = Date()
+        let slot = max(now, lastRequest?.addingTimeInterval(Self.minimumGap) ?? now)
+        lastRequest = slot
         requestCount += 1
+        let wait = slot.timeIntervalSince(now)
+        if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
         return true
     }
 

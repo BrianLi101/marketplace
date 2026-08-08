@@ -81,8 +81,12 @@ struct RootView: View {
                 .offset(x: 3000)
             HiddenWebViewHost(webView: seller.webView)
                 .offset(x: 3000)
-            HiddenWebViewHost(webView: discover.webView)
-                .offset(x: 3000)
+            // One per Discover search — they run at the same time, and an
+            // engine is one webview with one in-flight navigation.
+            ForEach(discover.webViews, id: \.self) { webView in
+                HiddenWebViewHost(webView: webView)
+                    .offset(x: 3000)
+            }
         }
         // Onboarding asks for two things the app cannot work without — a place
         // to search, and enough interests to build a first home screen from —

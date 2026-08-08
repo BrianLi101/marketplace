@@ -32,10 +32,39 @@ Up to three of the user's own recent searches, re-run and mixed.
 | Drop | cards badged `Ships` | A local marketplace's home screen isn't a shipping catalogue |
 | Distance | applied on-device, as everywhere | No surface honours `radius` (§3) |
 
-**Its own engine**, for the reason `ComparableSearch` has one: sharing the browse
-tab's would mean the home feed and the user's first search taking turns
-navigating one webview. No extra request budget — `RequestPacer` is shared — but
-it is three page loads per fill, which is why the fill happens once.
+**One engine per search**, and all of them run at once.
+
+An engine can't be shared, in either direction. Not with the browse tab, for the
+reason `ComparableSearch` has its own: the home feed and the user's first search
+would take turns navigating one webview. And not between the three searches
+either — an engine is one `WKWebView` with one in-flight navigation, and the
+markup fallback reads whatever document that webview is *currently* showing, so
+three concurrent searches through one would read each other's cards.
+
+The cost is two more hidden webviews resident for the app's lifetime; the return
+is the entire wait on the home screen, since nothing is shown until the fill
+finishes:
+
+| | Fill, three searches |
+|---|---|
+| Sequential, one engine | 13–20 s |
+| Concurrent, one engine each | **2.0 s** and **3.3 s** on two measured launches |
+
+No extra request budget — `RequestPacer` is shared and still spaces the starts
+0.4 s apart. It did not, at first: `waitForSlot` slept and *then* stamped
+`lastRequest`, and an `await` inside an actor method lets the next call in, so
+all three callers measured the same gap and two of them left at the same
+millisecond. It now reserves the slot before sleeping. Nothing had exercised
+that path before, because nothing in the app had ever made two requests at once.
+
+**A fill publishes once, when all of it is in.** It used to republish after each
+search, so the grid arrived in three instalments and reflowed twice — cards
+moving out from under a thumb, which is the one thing a feed must not do. It
+also made the wait look longer than it was by drawing attention to each stage of
+it. The section holds a skeleton under its heading and caption for the whole
+fill; on a *refresh*, the current cards stay up instead, because there is
+something better than a skeleton to look at and the gesture meant "get me a
+fresh one", not "take this away".
 
 **The seed terms are printed under the heading** ("From your searches for
 lamp · couch · desk"). This is load-bearing, not decoration: a shuffled feed with
@@ -68,8 +97,8 @@ the sheet closes.
 Not a new search — recent searches are the seed, so every search would otherwise
 throw away the feed the user is about to return to, and they'd come back from a
 search to a screen mid-reload. Not a change of city or signing in either, for the
-same reason: three page loads and a reshuffle under someone who is halfway down
-the feed is worse than a feed that is an hour old.
+same reason: a reshuffle under someone who is halfway down the feed is worse than
+a feed that is an hour old.
 
 **Nothing is written to disk.** Restoring a shuffle from yesterday and presenting
 it as today's would be a lie the cache tells for free. The cost is a slower cold
@@ -131,13 +160,18 @@ Interests make this worse rather than better, because there is now something
 good to fall through *to*: a junk term costs a third of the feed that an
 interest would otherwise have filled.
 
-### 4.2 Cold start is three sequential page loads
+### 4.2 Cold start is still three page loads — but they overlap now
 
-With no disk cache (§2), the first launch of a session has nothing to paint. It
-fills progressively — a batch at a time, spinner under the grid — rather than
-holding a skeleton for the whole run, but it is still noticeably slower than the
-version that restored from disk. The obvious lever if this proves annoying is
-dropping `searchCount` to two.
+**Largely fixed 2026-08-07.** With no disk cache (§2), the first launch of a
+session has nothing to paint and has to fetch everything. Running the three
+searches concurrently took that from 13–20 s to 2–3 s (§1), which is short
+enough to hold a skeleton through rather than something to paper over.
+
+What remains: it is still a network wait on a screen the user did not ask to
+wait for, and it is a floor set by the slowest of three Facebook page loads, so
+a bad connection restores the old problem in full. The levers if that shows up
+are `searchCount` and, at that point, reconsidering the no-disk-cache rule —
+which exists for honesty (§2), not for speed.
 
 ### 4.3 The distance-filter disclosure is at the bottom, where nobody is
 

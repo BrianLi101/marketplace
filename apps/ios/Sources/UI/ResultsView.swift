@@ -372,7 +372,17 @@ struct ResultsView: View {
                         .padding(.horizontal, 12)
                 }
             }
-            if w.items.isEmpty && discover.isLoading {
+            // The skeleton holds for the whole fill.
+            //
+            // The searches run concurrently and publish together, so there is
+            // no half-built state to show — and nothing that could be shown
+            // would survive: a partial feed reflows when the rest lands, which
+            // moves cards out from under whoever is already reading them.
+            //
+            // On a refresh the current cards stay up instead, because there is
+            // something better than a skeleton to look at and the gesture was
+            // "get me a fresh version of this", not "take this away".
+            if discover.isLoading && discover.listings.isEmpty {
                 SkeletonGrid()
             } else {
                 StaggeredGrid(items: w.items, columns: 2, spacing: 12) { listing in
@@ -380,14 +390,6 @@ struct ResultsView: View {
                         .onTapGesture { selected = listing }
                 }
                 .padding(.horizontal, 12)
-                // Still filling. Three searches run one after another, so the
-                // grid grows twice after it first appears, and a grid that
-                // grows with no explanation reads as a glitch.
-                if discover.isLoading {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
                 // Same reasoning as over a result set: cards removed on this
                 // device with nothing said about it are indistinguishable from
                 // a feed that came back thin.

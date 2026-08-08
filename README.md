@@ -360,11 +360,16 @@ swinging from mostly-San-Francisco to an East Bay spread reaching Napa. A
 rotating popularity pool, not a ranking — and logged out there is little to
 personalise it with anyway.
 
-**It rebuilds on exactly two events: relaunching the app, and pulling to
-refresh.** Not on a new search — recent searches are the seed, so every search
-would throw away the feed the user is about to return to. Nothing is written to
-disk, so a cold start does three sequential page loads, filling a batch at a
-time.
+**It rebuilds on relaunch, on pull-to-refresh, and when interests change.** Not
+on a new search — recent searches are the seed, so every search would throw away
+the feed the user is about to return to.
+
+**The three searches run at once, one engine each, and the grid appears in one
+piece.** It used to run them sequentially and republish after each, which took
+13–20 s and reflowed the grid twice under whoever was reading it; concurrent it
+measured 2.0 s and 3.3 s on two launches, which is short enough to hold a
+skeleton through. Nothing is written to disk, so that fetch happens on every
+cold start.
 
 The distance filter applies, as it does to search results. The "only new
 listings" filter does *not* — that one means "new to me in this search", and
