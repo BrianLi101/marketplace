@@ -10,7 +10,9 @@ The question: can the app change city, distance, local-vs-shipping, and
 sort order on the mobile surface it uses for browsing?
 
 **Short answer: no.** Mobile discards every query parameter except `query`.
-Desktop honours all of them except `radius`, which is decorative on both.
+Desktop honours all of them except `radius`, which is decorative on both —
+because radius isn't a request parameter at all. It belongs to the account, and
+§11 is where that was finally pinned down.
 
 ---
 
@@ -50,7 +52,7 @@ not a parameter that works.
 | `daysSinceListed` | **works** | stripped | `=1` → first result's item page read "Listed a day ago" |
 | `itemCondition` | **works** | stripped | `used_good,used_like_new` → both boxes rendered checked |
 | `minPrice`/`maxPrice` | **works** | stripped | `100`–`200` → all 15 prices inside the range, filter boxes echoed $100/$200 |
-| `radius` | **no** | stripped | see §3 |
+| `radius` | **no** | stripped | see §3 logged out, §11 signed in |
 
 **`sortBy=creation_time_descend` really is newest-first.** Opening the first and
 last of its 24 results: "Listed about an hour ago" and "Listed 9 hours ago". The
@@ -63,6 +65,12 @@ same prices, same cities, same first three labels. The city-slug case is the
 control that proves the harness works: it alone came back different.
 
 ## 3. `radius` is decorative on *both* surfaces
+
+> **Scope narrowed 2026-08-07.** Everything below holds, and holds only
+> **logged out** — which is the session every measurement here was taken in.
+> Signed in, `radius` behaves completely differently: the parameter is ignored
+> outright and the account's own stored radius filters the results properly.
+> See §11.
 
 Previously recorded as "web honours `radius`, mobile strips it". The first half
 was wrong — it was believed because the chip updates.
@@ -273,3 +281,98 @@ category-dependent — only one of eleven sold dressers was free — which is
 exactly why it has to be handled rather than eyeballed. `PriceGuide` excludes
 non-positive prices from the arithmetic on both sides; the sold strip still
 shows them, because "several of these went for free" is worth a seller knowing.
+
+## 11. `radius` is account state, and it only bites when you're signed in
+
+**Date:** 2026-08-07
+**Method:** the same URL, same query, same minute, in two browsers — one with
+no Facebook session, one signed in. Page props read out of the server-rendered
+HTML (`"location":{...}`), pill and cards read off the live DOM.
+
+The question this settles: **is the radius stored anywhere on the client, so
+the app could set it by writing into the data store?** No. It is not a cookie,
+not `localStorage`, not `sessionStorage`. It is server-side state attached to
+the account, and the only thing that writes it is Facebook's own picker.
+
+### Logged out — the parameter is accepted and then ignored
+
+The server does parse it. `?…&radius=8` renders
+
+```
+"location":{"radius":65 → 8,"latitude":37.7793,"longitude":-122.419,"vanityPageId":"sanfrancisco"}
+```
+
+— 65 km (40 mi) being the default for the vanity page — and the route params
+carry `"radius":8` where a bare URL carries `"radius":null`. The pill follows:
+`radius=2` renders "San Francisco · 1 mi".
+
+And the result set does not move. `radius=2` returned the same 15 listing ids
+as the bare URL, **including Vallejo, Berkeley and Emeryville** — Vallejo is
+~29 mi from the San Francisco centroid, i.e. 29× the radius the page is
+claiming. This reproduces §3 exactly, two days later, at a radius small enough
+that no rounding explains it.
+
+It also does not persist. Load `radius=2`, then load the bare URL: back to
+40 mi. Nothing was written anywhere.
+
+### What *is* in the client store, logged out
+
+Everything, checked by hand:
+
+| Store | Contents |
+|---|---|
+| Cookies (script-visible) | `wd=1280x900` — the viewport, that's all |
+| `localStorage` | ~40 `falco_queue_*` / `banzai:*` telemetry queues, `Session`, `hb_timestamp`, `signal_flush_timestamp` |
+| `sessionStorage` | `mp_search_query` (the literal string `desk`), `mp_session_id_v2`, `mp_page_load_id`, `TabId` |
+
+Marketplace keeps the *search term* in session storage and nothing else. There
+is no key holding a location, a coordinate, or a distance, so there is nothing
+for `WKWebsiteDataStore` to modify. (Session cookies are `HttpOnly` and
+invisible to script — but a value the app would have to forge inside Facebook's
+own session is not a lever we could pull anyway.)
+
+### Signed in — the opposite behaviour, on both halves
+
+Same URL, real session:
+
+| | Logged out | Signed in |
+|---|---|---|
+| Props `location.radius`, bare URL | 65 (the page default) | **16** — the account's own setting, 10 mi |
+| Props `location.latitude/longitude` | the SF centroid, 37.7793/-122.419 | a **stored precise point**, ~5 km off the centroid |
+| Props with `&radius=161` or `&radius=2` | follows the parameter | **still 16** — parameter discarded entirely |
+| Pill | follows the parameter | "San Francisco · 10 mi" regardless |
+| Cards returned | 15 | 30 |
+| Cities in those cards | SF, Daly City, Emeryville, Berkeley, Vallejo, Martinez | **San Francisco and Daly City only** |
+
+So the radius does work — it is simply a property of the account, not of the
+request. Signed in, Facebook filtered a 30-card result set to two cities inside
+10 mi without being asked to by the URL, and refused to widen when the URL
+asked it to.
+
+### Where it is set
+
+The "Change location" dialog — the one the app already drives for place
+resolution (`GeoPickerScripts`) — carries a **Radius** control next to the
+location field and the Apply button. It is not a native `<select>`; it is a
+custom combobox whose options are `[role="option"]` nodes reading
+
+    1 · 2 · 5 · 10 · 20 · 40 · 60 · 80 · 100 · 250 · 500 miles
+
+which is the same ladder the URL parameter snaps to (§1). Clicking an option
+and then Apply is the only write path.
+
+### Consequences for the app
+
+1. **The data-store idea is dead**, and cleanly so — there is nothing stored to
+   copy.
+2. **Client-side distance filtering stays**, and stays *necessary*, because the
+   app's primary session is anonymous, where no radius of any kind applies.
+3. **Signed in, Facebook's radius composes with ours, and it is a floor we
+   cannot raise.** A user whose account says 10 mi cannot see a 30-mile listing
+   in this app no matter what the app's own control says — including "Any".
+   Our widen-by-5-miles button is honest logged out and potentially a lie
+   signed in.
+4. **A radius that actually bites is reachable for signed-in users**, by
+   driving the picker the way the app already drives the geolocation arrow.
+   That would also raise the result cap from 15 to 30. It writes a setting to
+   the user's real Facebook account, so it needs consent, not a silent sync.

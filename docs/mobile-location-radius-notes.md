@@ -197,6 +197,16 @@ place-id fallback for misses.
   other filter parameter — `sortBy`, `deliveryMethod`, `daysSinceListed`,
   `itemCondition` and `minPrice`/`maxPrice` are all stripped on mobile, and
   none survives a desktop-to-mobile session switch (`filter-parameters.md`).
+> **Half-answered 2026-08-07** (`filter-parameters.md` §11). The radius is not
+> stored on the client at all — no cookie, no `localStorage`, no
+> `sessionStorage` — so there was never anything to write into the data store.
+> It is account state, it is written only by the picker's Radius dropdown, and
+> **it only filters anything for a signed-in session**: the same URL that
+> returns Vallejo and Berkeley logged out returns San Francisco and Daly City
+> signed in, because that account is set to 10 mi. The remaining question is
+> narrower than it was — not "can a radius be made to bite" but "should the app
+> write a setting to the user's real account to make it".
+
 - Can the location picker be driven in a hidden webview without a login prompt?
   Now **only relevant to radius**, since slugs solve location (§7). This
   previously read "Synthetic taps do not work on WebLite, so this would need a
