@@ -30,8 +30,9 @@ targets:
         # identifier with it — which is worse than it sounds, because the build
         # still succeeds and installs, just under a different app.
         #
-        # Uncomment with the Friendly Labs team id to sign. Signing is off for
-        # now, which is what lets simulator builds run unsigned.
-        # DEVELOPMENT_TEAM: XXXXXXXXXX
+        # Friendly Labs Inc. Recorded here so it survives; inert until
+        # CODE_SIGNING_ALLOWED goes to YES, which is the flip to make when
+        # building for a device or TestFlight. Simulator builds run unsigned.
+        DEVELOPMENT_TEAM: 6M3V5JF982
         CODE_SIGNING_ALLOWED: "NO"
         SWIFT_VERSION: "5.0"
