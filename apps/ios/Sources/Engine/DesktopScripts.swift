@@ -314,14 +314,76 @@ enum DesktopScripts {
             // Taking them all is how a mirror's gallery ended up showing a tool
             // chest — the same neighbour-contamination trap as the coordinates
             // and the condition, in a new place.
+            // The payload's own gallery, which is the reliable half.
+            //
+            // `listing_photos` appears exactly **once** per item page — against
+            // twenty `primary_listing_photo` objects belonging to the picks
+            // rail — so it needs no discriminator: it is the page's own listing
+            // by construction, and it is the only photo source that does not
+            // depend on anything having rendered.
+            //
+            // That independence is the point. A **sold** listing's page draws no
+            // gallery at all at desktop width: measured on three sold item
+            // pages at 1280px, zero `alt="Product photo of ..."` images against
+            // three on the same pages at a narrower viewport, and against two
+            // to three on any listing still for sale. The DOM scrape below
+            // therefore returned nothing for exactly the listings the Seller
+            // tab's sold strip opens, and the detail screen spent the full
+            // eight-second photo timeout finding it out.
             var photos = [];
+            var pk = flat.indexOf('"listing_photos"');
+            if (pk !== -1) {
+              // Bounded at the next typename boundary so this can't run on into
+              // a neighbour's object if the array is ever absent or empty.
+              var pblock = flat.slice(pk, pk + 20000);
+              var pend = pblock.indexOf('"__isMarketplace');
+              if (pend > 0) pblock = pblock.slice(0, pend);
+              // Deliberately a plain capture with the unescaping done after,
+              // rather than a regex that tries to match escaped slashes. The
+              // payload writes URLs as `https:\\/\\/scontent...`, and matching
+              // that shape through a Swift multiline string, a JS string and a
+              // regex is three layers of backslash nobody should have to read.
+              var pre = /"uri":"([^"]+)"/g, pm;
+              while ((pm = pre.exec(pblock)) !== null) {
+                var uri = pm[1].split('\\\\/').join('/');
+                if (uri.indexOf('scontent') === -1) continue;
+                if (photos.indexOf(uri) === -1) photos.push(uri);
+              }
+            }
+
+            // Then the rendered gallery, for anything the payload didn't carry.
+            //
+            // Every image in the "Today's picks" rail sits inside an
+            // `a[href*="/marketplace/item/"]` pointing at *another* listing,
+            // while the listing's own gallery is not wrapped in an item link at
+            // all. Measured on a sample page: 25 scontent images, 20 of them
+            // inside such an anchor and belonging to other sellers, 5 outside
+            // and carrying `alt="Product photo of <this title>"`.
+            //
+            // Taking them all is how a mirror's gallery ended up showing a tool
+            // chest — the same neighbour-contamination trap as the coordinates
+            // and the condition, in a new place.
+            //
+            // Deduped against the payload by the fbcdn filename's photo id, not
+            // by URL: the same photo is served at several sizes with different
+            // query strings, so a URL comparison would show it twice.
+            function photoKey(u) {
+              var f = u.split('?')[0].split('/').pop().split('.')[0].split('_');
+              return f.length >= 2 ? f[1] : u;
+            }
+            var seenKeys = {};
+            for (var pi = 0; pi < photos.length; pi++) seenKeys[photoKey(photos[pi])] = 1;
+
             var imgs = document.querySelectorAll('img[src*="scontent"]');
             for (var i = 0; i < imgs.length; i++) {
               var img = imgs[i];
               var src = img.getAttribute('src') || '';
               if (src.indexOf('rsrc.php') !== -1) continue;
               if (img.closest && img.closest('a[href*="/marketplace/item/"]')) continue;
-              if (photos.indexOf(src) === -1) photos.push(src);
+              var key = photoKey(src);
+              if (seenKeys[key]) continue;
+              seenKeys[key] = 1;
+              photos.push(src);
             }
 
             // Seller identity only exists for a signed-in session. The rating
@@ -396,6 +458,25 @@ enum DesktopScripts {
               }
             }
 
+            // Sold and pending, from the listing's own object.
+            //
+            // Anchored on `"location_text"` — the same discriminator the
+            // coordinates above use, and for the same reason. A sold item page
+            // carries twenty-one `is_sold` values: one true for this listing
+            // and twenty false ones belonging to the picks rail. Counting
+            // occurrences, or taking the first, would report a neighbour's
+            // availability as this listing's. Verified both ways: the anchor
+            // returns exactly one value, `true` on a sold page and `false` on a
+            // listing still for sale.
+            var isSold = null, isPending = null;
+            if (anchor !== -1) {
+              var avail = flat.slice(Math.max(0, anchor - 4000), anchor + 4000);
+              var sm2 = avail.match(/"is_sold":(true|false)/);
+              var pm2 = avail.match(/"is_pending":(true|false)/);
+              if (sm2) isSold = sm2[1] === 'true';
+              if (pm2) isPending = pm2[1] === 'true';
+            }
+
             // "Condition" and its value render as adjacent lines in Details.
             var conditionText = null;
             var cm = body.match(/Condition[^]{0,3}(New|Used - Like New|Used - Good|Used - Fair)/i);
@@ -427,11 +508,13 @@ enum DesktopScripts {
               locationText: firstMatch(/[A-Z][A-Za-z .'-]+, [A-Z]{2}/),
               latitude: lat,
               longitude: lng,
+              isSold: isSold,
+              isPending: isPending,
               profileLinks: document.querySelectorAll('a[href*="/marketplace/profile/"]').length,
               loginWall: body.indexOf('You must log in') !== -1
             });
           } catch (e) {
-            return JSON.stringify({ error: String(e.message), photoURLs: [], loginWall: false });
+            return JSON.stringify({ error: String(e.message), photoURLs: [], isSold: null, isPending: null, loginWall: false });
           }
         })()
         """

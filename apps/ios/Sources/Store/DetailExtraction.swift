@@ -20,6 +20,12 @@ struct RawDetail: Decodable {
     let locationText: String?
     let latitude: String?
     let longitude: String?
+    /// Whether the listing is still for sale, read from the item page itself.
+    ///
+    /// Optional because WebLite's extractor doesn't produce it — nil means
+    /// "this surface didn't say", never "still available".
+    let isSold: Bool?
+    let isPending: Bool?
     let loginWall: Bool
 
     /// "Has something worth showing" and "has everything" are different
@@ -41,7 +47,9 @@ struct RawDetail: Decodable {
             sellerRating: sellerRatingText.flatMap(Double.init),
             sellerRatingCount: sellerRatingCount.flatMap(Int.init),
             latitude: latitude.flatMap(Double.init),
-            longitude: longitude.flatMap(Double.init)
+            longitude: longitude.flatMap(Double.init),
+            isSold: isSold,
+            isPending: isPending
         )
     }
 

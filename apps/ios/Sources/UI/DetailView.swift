@@ -27,6 +27,36 @@ struct DetailView: View {
 
     private var detail: ListingDetail? { current.detail }
 
+    /// Whether this is still for sale.
+    ///
+    /// Two sources, and the item page wins when it has spoken. The card's badge
+    /// is whatever was true when the search ran, which for anything restored
+    /// from cache can be days old — and sold state is, with price, exactly what
+    /// goes stale in a cache and exactly what someone opening a listing most
+    /// needs to be right.
+    ///
+    /// `nil` from the item page means *nothing told us*, not *available*, so it
+    /// falls back to the badge rather than overriding it.
+    private enum Availability {
+        case available, pending, sold
+
+        var isGone: Bool { self != .available }
+    }
+
+    private var availability: Availability {
+        if let sold = detail?.isSold {
+            if sold { return .sold }
+            if detail?.isPending == true { return .pending }
+            return .available
+        }
+        // Nothing from the item page yet — fall back to the card.
+        switch current.badgeText?.lowercased() {
+        case "sold": return .sold
+        case "pending": return .pending
+        default: return .available
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -156,16 +186,58 @@ struct DetailView: View {
                     }
                 }
             }
+            .overlay {
+                // Dimmed, not just badged. A sold listing that looks exactly
+                // like an available one until you read a label is a listing
+                // someone will message about.
+                if availability.isGone {
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(.black.opacity(0.45))
+                }
+            }
+            .overlay(alignment: .center) {
+                if availability.isGone { soldStamp }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .matchedGeometryEffect(id: current.id, in: namespace)
+    }
+
+    /// Across the photo, because that is where the eye lands first and the
+    /// whole point is that this is unmissable before anything else is read.
+    private var soldStamp: some View {
+        Text(availability == .sold ? "SOLD" : "SALE PENDING")
+            .font(.title2.weight(.heavy))
+            .kerning(2)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 11)
+            .background(
+                Capsule().fill(.ultraThinMaterial)
+                    .overlay(Capsule().stroke(.white.opacity(0.7), lineWidth: 2))
+            )
+            .accessibilityLabel(availability == .sold ? "Sold" : "Sale pending")
     }
 
     private var priceBlock: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(current.priceText ?? "—").font(.title2.weight(.semibold))
+                Text(current.priceText ?? "—")
+                    .font(.title2.weight(.semibold))
+                    // A struck-through price says "not for sale at this price"
+                    // in the one place nobody can miss it, and it is the same
+                    // language the was-price beside it already speaks.
+                    .strikethrough(availability == .sold)
+                    .foregroundStyle(availability == .sold ? .secondary : .primary)
                 if let original = current.originalPriceText {
                     Text(original).font(.subheadline).foregroundStyle(.secondary).strikethrough()
+                }
+                if availability.isGone {
+                    Text(availability == .sold ? "Sold" : "Pending")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(availability == .sold ? Color.secondary : Color.orange))
                 }
             }
             if let title = current.title {
@@ -422,8 +494,17 @@ struct DetailView: View {
     /// The button says what it does. It deep-links to this listing's own
     /// Marketplace page when the id resolved, and says so when it couldn't —
     /// rather than promising "Message Seller" and landing somewhere generic.
+    ///
+    /// When the listing is gone the link stays — there is still a page there,
+    /// and a seller with other things — but it leads with that fact rather than
+    /// offering an unqualified call to action for something nobody can buy.
     private var viewOnFacebookTitle: String {
-        current.itemURL != nil ? "View on Facebook" : "Search on Facebook"
+        guard current.itemURL != nil else { return "Search on Facebook" }
+        switch availability {
+        case .sold: return "Sold — view on Facebook"
+        case .pending: return "Sale pending — view on Facebook"
+        case .available: return "View on Facebook"
+        }
     }
 
     /// §4 — every route out is a link. When the canonical URL never resolved,
@@ -441,11 +522,16 @@ struct DetailView: View {
         VStack(spacing: 0) {
             Divider()
             Button(action: openInFacebook) {
-                Label(viewOnFacebookTitle, systemImage: "arrow.up.forward.app")
+                Label(viewOnFacebookTitle,
+                      systemImage: availability.isGone ? "tag.slash" : "arrow.up.forward.app")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
+            // Grey rather than accent-blue when there is nothing to buy: the
+            // control still works, and it should stop reading as the thing to
+            // do next.
+            .tint(availability.isGone ? Color.secondary : Color.accentColor)
             .padding()
         }
         .background(.bar)

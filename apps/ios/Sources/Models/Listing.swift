@@ -40,6 +40,20 @@ struct ListingDetail: Codable, Equatable, Hashable {
     /// is still kilometres closer than the geocoded city centroid it replaces.
     var latitude: Double?
     var longitude: Double?
+
+    /// Whether the listing is still for sale, as the item page reported it on
+    /// the last fetch.
+    ///
+    /// Optional on purpose, and the distinction is the whole point: `nil` means
+    /// nothing has told us, which is what a card from the mobile surface or a
+    /// pre-existing cache entry looks like. Only `true` may be presented as
+    /// sold. Treating absent as available would be the safer-looking default
+    /// and the wrong one — a stale cache would quietly show a sold listing as
+    /// on the market.
+    var isSold: Bool?
+    /// Someone has agreed to buy it and not yet collected. Weaker than sold and
+    /// worth distinguishing: a pending listing can fall through.
+    var isPending: Bool?
 }
 
 extension Listing {

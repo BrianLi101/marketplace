@@ -232,6 +232,31 @@ to Stockton, Davis and Sacramento. `daysSinceListed=1` keeps 10 of 15 results in
 the requested city. For a local browser the date filter is the better lever, and
 ordering can be done client-side.
 
+**A sold listing's item page renders no gallery at desktop width.** Measured
+2026-08-07 at 1280px, the viewport the detail engine uses: zero
+`alt="Product photo of ..."` images on three sold item pages, against two to
+three on any listing still for sale, and against three on the *same* sold pages
+at a narrower viewport. The DOM scrape therefore returned nothing for exactly
+the listings the Seller tab's sold strip opens, and the detail screen spent its
+full eight-second photo timeout finding that out.
+
+The photos are in the payload regardless. `listing_photos` appears **exactly
+once** per item page — against twenty `primary_listing_photo` objects belonging
+to the picks rail — so it needs no discriminator, and it does not depend on
+anything having rendered. It is now the primary source, with the rendered
+gallery appended for anything it missed, deduped by the fbcdn filename's photo
+id since the same photo is served at several sizes.
+
+The same page carries the listing's own `is_sold` and `is_pending`, anchored on
+`"location_text"` — the discriminator the coordinate extraction already trusts.
+That anchor matters: a sold item page carries twenty-one `is_sold` values, one
+true for this listing and twenty false ones from the picks rail, so taking the
+first or counting occurrences would report a neighbour's availability as this
+listing's. Verified both ways: `true` on a sold page, `false` on one still for
+sale. The detail screen now dims the photo, stamps SOLD across it, strikes the
+price through and greys the button to "Sold — view on Facebook", rather than
+relying on a card badge that can be days stale.
+
 **Some search terms return nothing, and it isn't relevance.** Measured
 2026-08-07 in San Francisco, logged out, all within six minutes of each other:
 
