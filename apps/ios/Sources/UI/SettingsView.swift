@@ -4,7 +4,6 @@ import SwiftUI
 /// minimum-functionality concern about thin webview wrappers.
 struct SettingsView: View {
     @EnvironmentObject private var prefs: Preferences
-    @EnvironmentObject private var location: LocationProvider
     @EnvironmentObject private var store: ListingStore
     @EnvironmentObject private var viewed: ViewedListings
     @Environment(\.dismiss) private var dismiss
@@ -26,14 +25,16 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("Search area") {
-                    Picker("Default radius", selection: $prefs.radiusKM) {
-                        ForEach(Preferences.radiusOptions, id: \.self) { km in
-                            Text("\(SearchQuery.kilometresToMiles(km)) mi").tag(km)
-                        }
-                    }
-                    LabeledContent("Location", value: prefs.locationName ?? "Not set")
-                }
+                // "Search area" used to sit here — a default-radius picker and
+                // a read-only location row. Both moved to the location sheet,
+                // where the place and the distance are chosen together because
+                // they read as one fact ("San Francisco · 10 mi"), and both are
+                // one tap from the bar that displays them.
+                //
+                // The radius picker had also quietly become wrong: it offered
+                // only the standard rungs, so a radius set by "Try 6 mi" on the
+                // results screen couldn't be represented, and opening Settings
+                // would show some other value as selected.
 
                 Section("History") {
                     Button("Clear search history") { prefs.recentSearches = [] }
