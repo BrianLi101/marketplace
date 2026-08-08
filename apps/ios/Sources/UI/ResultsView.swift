@@ -233,8 +233,8 @@ struct ResultsView: View {
         }
     }
 
-    /// With an empty search bar, the home screen is what the user kept and what
-    /// they looked at.
+    /// With an empty search bar, the home screen is what the user looked at and
+    /// what they kept.
     ///
     /// Entirely local — every card here comes out of the profile store, which
     /// is exactly why it can render with no network at all. Both saving and
@@ -244,9 +244,11 @@ struct ResultsView: View {
     private var home: some View {
         let savedItems = store.listings(for: saved.ids)
         // Saved listings are excluded from the strip: they are already on this
-        // screen, in the grid directly above, and the same card twice is
-        // clutter rather than information. It also keeps `heroNamespace` ids
-        // unique across the screen, which `matchedGeometryEffect` requires.
+        // screen, in the grid below, and the same card twice is clutter rather
+        // than information. It also keeps `heroNamespace` ids unique across the
+        // screen, which `matchedGeometryEffect` requires — that part is a hard
+        // constraint rather than a preference, and holds whichever section is
+        // on top.
         let recentIDs = viewed.ids
             .filter { !saved.contains($0) }
             .prefix(ViewedListings.recentStripLength)
@@ -255,7 +257,17 @@ struct ResultsView: View {
         if savedItems.isEmpty && recentItems.isEmpty {
             EmptyStatePrompt(hasSavedNothing: saved.isEmpty)
         } else {
+            // Recently viewed first, then saved.
+            //
+            // The strip is one row deep and costs almost nothing at the top,
+            // where it catches the common case: coming back to something looked
+            // at a minute ago and not kept. Saved is the larger, browsable
+            // thing, and a staggered grid is happier as the section that runs
+            // to the bottom of the scroll than as a block wedged above a rail.
             VStack(alignment: .leading, spacing: 24) {
+                if !recentItems.isEmpty {
+                    recentlyViewed(recentItems)
+                }
                 if !savedItems.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         sectionTitle("Saved")
@@ -265,9 +277,6 @@ struct ResultsView: View {
                         }
                         .padding(.horizontal, 12)
                     }
-                }
-                if !recentItems.isEmpty {
-                    recentlyViewed(recentItems)
                 }
             }
             .padding(.top, 4)
@@ -282,9 +291,10 @@ struct ResultsView: View {
 
     /// Everything opened lately, newest first.
     ///
-    /// A horizontal strip rather than a second grid: this is a way back to
-    /// something half-remembered, not a list to browse, and it shouldn't
-    /// compete for space with the listings the user deliberately kept.
+    /// A horizontal strip rather than a second grid, and that is what earns it
+    /// the top of the screen: it is a way back to something half-remembered
+    /// rather than a list to browse, so it does its whole job in one row and
+    /// hands the rest of the screen to Saved.
     private func recentlyViewed(_ items: [Listing]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Recently viewed")
