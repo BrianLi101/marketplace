@@ -196,11 +196,6 @@ final class Preferences: ObservableObject {
         case .category(let name):
             lastQueryKind = "category"
             lastQueryValue = name
-        case .browse:
-            // Not a place the user navigated to — it's what the home screen
-            // shows when they haven't navigated anywhere. Reopening on it would
-            // mean restoring the screen they'd get anyway.
-            break
         }
     }
 

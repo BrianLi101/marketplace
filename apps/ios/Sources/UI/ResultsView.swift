@@ -156,15 +156,19 @@ struct ResultsView: View {
             .task {
                 distances.setUserLocation(DistanceResolver.origin(for: prefs.resolvedPlace, deviceFix: location.coordinate))
             }
-            // The home feed, loaded on arrival rather than on demand — it is
+            // The home feed, filled on arrival rather than on demand — it is
             // the thing the user is meant to land in, so waiting for a gesture
-            // to start it would defeat the point. `loadIfNeeded` is what makes
-            // that affordable: coming back from a listing or the seller tab
-            // costs nothing.
+            // to start it would defeat the point. It then stands for the rest
+            // of the launch: `loadIfNeeded` is a no-op after the first fill, so
+            // coming back from a listing or the seller tab costs nothing and
+            // finds the same cards in the same places.
+            //
+            // Nothing else invalidates it — not a new search, not a change of
+            // city, not signing in. It is three page loads, it is deliberately
+            // a shuffle, and rebuilding it under someone who is halfway down it
+            // is worse than showing them a feed that is an hour old. Relaunch
+            // and pull-to-refresh are the two ways to get a new one.
             .task { await loadDiscover() }
-            .onChange(of: prefs.locationSlug) { Task { await loadDiscover() } }
-            // Signing in changes the result set outright, here as everywhere.
-            .onChange(of: store.session) { Task { await loadDiscover() } }
             .refreshable {
                 // The gesture means "get me a fresh version of this screen",
                 // and which screen that is depends on whether a search is up.
@@ -326,19 +330,30 @@ struct ResultsView: View {
         }
     }
 
-    /// Whatever Facebook is showing for this place, with no search behind it.
+    /// A shuffled mix drawn from the user's own recent searches.
     ///
     /// It runs to the bottom of the scroll, because it is the only section here
-    /// that can — the other two are bounded by what the user has done, and this
-    /// one is bounded by what Facebook served. The distance filter applies to it
-    /// exactly as it applies to search results: Facebook's default feed is a
-    /// recommendation surface first and a local one second, and reaches 35-40 mi
-    /// out even when the header claims otherwise
-    /// (`docs/mobile-location-radius-notes.md` §3).
+    /// that can — the other two are bounded by what the user has done to
+    /// individual listings, and this one is bounded by what those searches
+    /// returned.
+    ///
+    /// The terms are named under the heading, and that is not decoration. A
+    /// shuffled feed with no stated basis is indistinguishable from a random
+    /// one — which is exactly the complaint that got Facebook's own feed
+    /// removed from this screen. Saying "from lamp · couch · desk" is what makes
+    /// the mix legible as a consequence of something the user did.
     @ViewBuilder
     private func discoverSection(_ w: Winnowed) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Discover")
+            VStack(alignment: .leading, spacing: 2) {
+                sectionTitle("Discover")
+                if !discover.terms.isEmpty {
+                    Text("From your searches for \(discover.terms.joined(separator: " · "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                }
+            }
             if w.items.isEmpty && discover.isLoading {
                 SkeletonGrid()
             } else {
@@ -347,6 +362,14 @@ struct ResultsView: View {
                         .onTapGesture { selected = listing }
                 }
                 .padding(.horizontal, 12)
+                // Still filling. Three searches run one after another, so the
+                // grid grows twice after it first appears, and a grid that
+                // grows with no explanation reads as a glitch.
+                if discover.isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
                 // Same reasoning as over a result set: cards removed on this
                 // device with nothing said about it are indistinguishable from
                 // a feed that came back thin.
@@ -552,9 +575,7 @@ struct ResultsView: View {
     /// The same place every search uses, so Discover and a search from the home
     /// screen are looking at the same city.
     private func loadDiscover(force: Bool = false) async {
-        await discover.loadIfNeeded(citySlug: prefs.locationSlug ?? "sanfrancisco",
-                                    session: store.session,
-                                    force: force)
+        await discover.loadIfNeeded(citySlug: prefs.locationSlug ?? "sanfrancisco", force: force)
     }
 
     /// Location is an enhancement, never a gate: searching uses whatever

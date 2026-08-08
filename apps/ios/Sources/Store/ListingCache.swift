@@ -91,14 +91,6 @@ final class ListingCache {
 
     private var profiles: [String: CachedProfile] = [:]
     private var results: CachedResults?
-    /// The discover feed's own slot.
-    ///
-    /// Separate from `results` because that one holds exactly one query, and
-    /// sharing it would mean the home screen's feed and the user's last search
-    /// evicted each other on every trip between them — the two would race, and
-    /// whichever loaded last would be the only one that could ever render from
-    /// cache.
-    private var discover: CachedResults?
     private var saveTask: Task<Void, Never>?
     private let directory: URL
     /// Saved listings are user data, not cache. Letting the LRU evict one would
@@ -107,7 +99,6 @@ final class ListingCache {
 
     private var profilesFile: URL { directory.appendingPathComponent("profiles.json") }
     private var resultsFile: URL { directory.appendingPathComponent("results.json") }
-    private var discoverFile: URL { directory.appendingPathComponent("discover.json") }
 
     init(directory: URL? = nil,
          isSaved: @escaping @MainActor (String) -> Bool = { SavedListings.shared.contains($0) }) {
@@ -215,27 +206,6 @@ final class ListingCache {
         scheduleSave()
     }
 
-    // MARK: - Discover
-
-    /// The same contract as `results`, against the home feed's own slot: same
-    /// place, same session, or nothing. Also reports *when* it was captured,
-    /// because this one is shown without the user having asked for it — a feed
-    /// from last week should be replaced rather than merely topped up.
-    func discoverResults(for query: SearchQuery, session: BrowserSession) -> (listings: [Listing], savedAt: Date)? {
-        guard let discover, discover.queryURL == query.url.absoluteString else { return nil }
-        guard (discover.session ?? .unauthed) == session else { return nil }
-        return discover.listings.isEmpty ? nil : (discover.listings, discover.savedAt)
-    }
-
-    func saveDiscover(_ listings: [Listing], for query: SearchQuery, session: BrowserSession) {
-        guard !listings.isEmpty else { return }
-        discover = CachedResults(queryURL: query.url.absoluteString,
-                                 listings: listings,
-                                 savedAt: Date(),
-                                 session: session)
-        scheduleSave()
-    }
-
     // MARK: - Disk
 
     private func load() {
@@ -247,10 +217,6 @@ final class ListingCache {
         if let data = try? Data(contentsOf: resultsFile),
            let decoded = try? decoder.decode(CachedResults.self, from: data) {
             results = decoded
-        }
-        if let data = try? Data(contentsOf: discoverFile),
-           let decoded = try? decoder.decode(CachedResults.self, from: data) {
-            discover = decoded
         }
         Logger.cache.info("loaded \(self.profiles.count) profiles, \(self.results?.listings.count ?? 0) cards")
     }
@@ -270,11 +236,9 @@ final class ListingCache {
     func writeToDisk() async {
         let profilesSnapshot = profiles
         let resultsSnapshot = results
-        let discoverSnapshot = discover
         let directory = directory
         let profilesFile = profilesFile
         let resultsFile = resultsFile
-        let discoverFile = discoverFile
 
         await Task.detached(priority: .utility) {
             let encoder = JSONEncoder()
@@ -284,9 +248,6 @@ final class ListingCache {
             }
             if let resultsSnapshot, let data = try? encoder.encode(resultsSnapshot) {
                 try? data.write(to: resultsFile, options: .atomic)
-            }
-            if let discoverSnapshot, let data = try? encoder.encode(discoverSnapshot) {
-                try? data.write(to: discoverFile, options: .atomic)
             }
         }.value
     }

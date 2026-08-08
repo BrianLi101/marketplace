@@ -16,15 +16,13 @@ struct SearchQuery: Equatable {
     enum Kind: Equatable {
         case search(String)
         case category(String)
-        /// No search term at all — Facebook's own default feed for a place.
-        ///
-        /// The one query the app makes that isn't asking for anything in
-        /// particular, which is exactly what makes it useful on the home
-        /// screen. It comes back thinner than a search does: the embedded
-        /// payload is effectively absent on this path (`DiscoverFeed`), so
-        /// these cards are markup-only.
-        case browse
     }
+
+    // A `browse` kind — no search term, Facebook's own feed for a place — lived
+    // here briefly, for the home screen's Discover section. Removed with it: the
+    // feed it produced was a rotating popularity pool rather than a
+    // recommendation, and the page it loaded carries no usable embedded payload
+    // (`docs/embedded-payload.md` §8). Discover runs real searches now.
 
     /// Verified against result sets, not just parameter survival.
     /// `creation_time_descend` is genuinely newest-first — the first and last of
@@ -135,7 +133,6 @@ struct SearchQuery: Equatable {
         switch kind {
         case .search(let term): return term
         case .category(let name): return name
-        case .browse: return "Nearby"
         }
     }
 
@@ -151,8 +148,6 @@ struct SearchQuery: Equatable {
             items.append(URLQueryItem(name: "query", value: term))
         case .category(let name):
             components.path = "/marketplace/\(citySlug)/\(Self.categorySlug(name))/"
-        case .browse:
-            components.path = "/marketplace/\(citySlug)/"
         }
 
         if sort != .bestMatch {

@@ -340,11 +340,17 @@ The markup, meanwhile, is complete — every one of the twenty anchors carries t
 same `aria-label` shape the search tail is parsed from
 (`"Beanbag poufs, $5, San Francisco, CA, listing 1597932195222996"`).
 
-**Consequence.** `DiscoverFeed` reads the DOM and ignores the payload entirely.
-Discover cards therefore have no exact `creation_time`, no `delivery_types` and
-no sold state, and nothing downstream may assume otherwise — opening one
-enriches it from its item page like any other card. Category paths remain
-untested; assume the same until someone measures them.
+**Consequence.** Category paths remain untested; assume the same until someone
+measures them.
+
+> **The caller this was measured for is gone.** `DiscoverFeed` briefly read the
+> browse page's DOM to fill the home screen. It now runs the user's own recent
+> searches instead — the browse feed turned out to be a rotating popularity pool
+> rather than a recommendation (README, "Why not Facebook's own feed"), and
+> being markup-only was the smaller of its two problems. Nothing in the app
+> loads a browse path today. The measurement stands on its own: it is the answer
+> to half of §7's open question, and the reason to be suspicious of any future
+> plan that assumes payload coverage off a `/search/` path.
 
 **One parsing bug fell out of this.** The browse feed spells a free listing's
 price `FREE`, where search results spell it `Free`. `DesktopCardParser` matched

@@ -302,32 +302,74 @@ at", "the thing I kept" — and both are a route back to one specific listing
 rather than something to browse, which is why they're rails: two rows, and then
 the screen belongs to something else.
 
-**Discover** is that something else: Facebook's own default feed for wherever
-the user is, with no search behind it. Before it existed, a new install landed
+**Discover** is that something else: up to three of the user's own recent
+searches, re-run and shuffled together. Before it existed, a new install landed
 on an empty state and a search field and had to think of something to type
 before the app would do anything at all.
 
-Three things about it are worth knowing:
+### Why not Facebook's own feed
 
-- **It has its own engine**, for the same reason the Seller tab does. Sharing
-  the browse tab's webview would mean the home feed and the user's first search
-  taking turns navigating one page. It costs one more idle webview and no extra
-  request budget — `RequestPacer` is shared.
-- **It is markup-only.** The embedded payload that makes desktop search worth
-  using is effectively absent on `/marketplace/<place>/`: six `"listing"` blocks
-  against twenty rendered cards, and not one of the six carried a title, a price
-  or a photo (`docs/embedded-payload.md` §8). The DOM was complete, 20 of 20. So
-  these cards have no exact timestamp, no delivery types and no sold state until
-  one is opened.
-- **The distance filter applies to it**, because Facebook's default feed is a
-  recommendation surface first and a local one second and reaches 35–40 mi out.
-  The "only new listings" filter does *not* — that one means "new to me in this
-  search", and quietly emptying a feed nobody asked for would be a strange
-  reward for using the app. The seen marker already says which cards have been
-  opened.
+The first version of Discover loaded `/marketplace/<place>/` — "Today's picks" —
+and it was a bad recommendation surface. Three loads of the identical URL in one
+session:
 
-Pull to refresh reloads whichever of the two screens is up: the discover feed on
-home, the current query over results.
+| | vs previous load |
+|---|---|
+| load 1 → 2 | **0 of 5** top cards survived |
+| load 2 → 3 | 17 of 20 overlapped |
+| load 4 | reverted to load 1's contents |
+
+The geography swung with it, from 9-of-20 in San Francisco to an East Bay spread
+reaching Napa and Antioch, 50 mi out. It reads as a couple of cached popularity
+pools being alternated rather than a ranking — and logged out there is little for
+Facebook to personalise it *with*: an IP, an anonymous cookie, and whatever item
+pages that cookie has opened. (The plumbing does allow the last of those: every
+engine shares one persistent `WKWebsiteDataStore`, so opening a listing is
+visible to Facebook. Whether it feeds the picks is untested — the feed's own
+churn is far larger than the effect a test would be looking for.)
+
+The app knows more than that, and knows it locally. What Discover gives up is
+novelty: it cannot show you something in a category you have never asked about.
+That is the trade — relevance over surprise, from signals that never leave the
+device.
+
+### How it's built
+
+- **Up to three searches**, seeded from `recentSearches`, newest first. A new
+  install has none, so it falls back to the same suggested categories the search
+  field offers, shuffled.
+- **A random sample of each**, not the top of each: results are shuffled
+  *before* being cut to ten, or Discover would just be the first rows of three
+  searches — which the user could have got by running them.
+- **Round-robin across the three**, so the mix is visible in the first row
+  rather than being three blocks stacked up.
+- **The user's own filters**, exactly as a search would apply them. A Discover
+  that ignored their delivery method or price range would show them results
+  their own search wouldn't.
+- **Its own engine**, for the same reason the Seller tab has one. Sharing the
+  browse tab's webview would mean the home feed and the user's first search
+  taking turns navigating one page.
+
+### What invalidates it
+
+Two things: **relaunching the app, and pulling to refresh.** Nothing else — not
+running a search, not changing city, not signing in. It is three page loads and
+it is deliberately a shuffle, so rebuilding it under someone who is halfway down
+it is worse than letting it be an hour old. Nothing is written to disk either:
+restoring a shuffle from yesterday and presenting it as today's would be a lie
+the cache tells for free.
+
+The cost is honest and worth stating: a cold start does three sequential page
+loads before the feed is complete. It fills progressively — a batch at a time,
+with a spinner under the grid — rather than holding a skeleton for the whole run.
+
+The distance filter applies, as it does to search results. The "only new
+listings" filter does *not* — that one means "new to me in this search", and
+quietly emptying a feed nobody asked for would be a strange reward for using the
+app. The seen marker already says which cards have been opened.
+
+Pull to refresh reloads whichever of the two screens is up: Discover on home, the
+current query over results.
 
 ---
 
