@@ -291,6 +291,39 @@ can't price at all.
 
 ---
 
+## Onboarding asks for two things, and requires both
+
+Three screens: what this is, **where you're shopping**, and **what you shop
+for**. The last two are gates rather than greetings.
+
+The first run used to be three explanatory cards and a Start button. They were
+honest and completely inert — the app came out of them knowing nothing, so the
+first screen anyone saw was a hardcoded fallback city searched for a shuffle of
+hardcoded categories. Whether that was any good depended on whether the user
+happened to live in San Francisco and happened to want furniture.
+
+- **A place**, by device fix or by searching a city — either way it goes through
+  Facebook's own picker, so the slug is one Facebook recognises
+  (`PlaceChooser`). Distance is the app's organising idea and it is applied on
+  this device, so without a place there is nothing to measure from.
+- **Three interests**, stored long-term as an array of ids and used as Discover's
+  seeds until there's search history. Three because Discover runs three searches
+  per fill; fewer would make a first screen out of one topic.
+
+No skip link on either. A skip buys thirty seconds and costs the app any idea of
+what to show, and the screen it skips to is the one that then can't do its job.
+The explaining is folded into the first screen, where it costs one tap instead
+of three. Interests stay editable afterwards in Settings → Interests, and
+changing them refills Discover when the sheet closes.
+
+Both requirements are re-checked on every launch rather than trusted to a
+one-time flag, so an install that ends up without a place, or with its interests
+emptied, gets asked again instead of landing on a home screen with nothing
+behind it. Existing installs are asked once: the old "seen the first run" flag
+is deliberately not read, because seeing those cards told the app nothing.
+
+---
+
 ## The home screen
 
 Three sections, top to bottom, and any of the first two disappears when it has
@@ -306,6 +339,13 @@ the screen belongs to something else.
 searches, re-run and shuffled together. Before it existed, a new install landed
 on an empty state and a search field and had to think of something to type
 before the app would do anything at all.
+
+**With no search history, the seeds are the interests picked during
+onboarding** — that is what the required three-interest step is for. Searches
+are about *now* and always come first; interests are a standing statement made
+once, and they recede as history accumulates. The heading says which it used,
+because "from your searches for lamp · desk" would be a lie on a screen built
+out of a list somebody picked off a menu thirty seconds ago.
 
 Each search's results are shuffled *before* being cut to ten and the three are
 interleaved, so Discover is a random sample of three searches rather than their
@@ -746,6 +786,7 @@ item — several of these are harder or easier than they look. Items marked
 | `docs/embedded-payload.md` | The GraphQL response Facebook ships inside desktop pages, and why the API isnt worth calling |
 | `docs/logged-in-findings.md` | What a signed-in session changes: seller identity yes, structured depth no |
 | `docs/discover.md` | The home screen feed: how it's seeded, why Facebook's own picks were rejected, its open issues, and what breaks if it ever holds older cards |
+| `docs/onboarding.md` | The two things the app requires before it will show a home screen, why neither can be skipped, and how the gate is written |
 | **`docs/location.md`** | **Everything about location, both surfaces — start here.** What Facebook accepts, why a refusal is silent, the coordinate route, the verification protocol, the fuzz lattice, and where distances are measured from |
 | `docs/location-targeting.md` | The raw desktop session record: slugs vs place ids, and the §5a/§5b correction that found the coordinate route |
 | `docs/feasibility-2026-07-31.md` | The original §9 feasibility answers and how the architecture got here |

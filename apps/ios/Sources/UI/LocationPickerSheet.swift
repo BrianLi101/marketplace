@@ -16,17 +16,12 @@ struct LocationPickerSheet: View {
     @EnvironmentObject private var prefs: Preferences
     @EnvironmentObject private var location: LocationProvider
     @StateObject private var cities = AppleMapsCitySearch()
+    /// The two-step resolution and its failure wording, shared with the
+    /// location step of onboarding so the two screens can't drift apart.
+    @StateObject private var chooser = PlaceChooser()
     @Environment(\.dismiss) private var dismiss
 
     @State private var query = ""
-    @State private var pending: Pending?
-    @State private var failure: String?
-
-    /// What we're waiting on, so the right row shows the spinner.
-    private enum Pending: Equatable {
-        case deviceFix
-        case city(String)
-    }
 
     /// Typing takes the screen over.
     ///
@@ -47,7 +42,7 @@ struct LocationPickerSheet: View {
                     currentSection
                     distanceSection
                 }
-                if let failure { failureSection(failure) }
+                if let failure = chooser.failure { failureSection(failure) }
             }
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Search for a city")
@@ -120,10 +115,10 @@ struct LocationPickerSheet: View {
                 HStack {
                     Label("Use my current location", systemImage: "location")
                     Spacer()
-                    if pending == .deviceFix { ProgressView().controlSize(.small) }
+                    if chooser.pending == .deviceFix { ProgressView().controlSize(.small) }
                 }
             }
-            .disabled(pending != nil)
+            .disabled(chooser.isBusy)
         } header: {
             Text(prefs.resolvedPlace == nil ? "Location" : "Browsing")
         } footer: {
@@ -209,12 +204,12 @@ struct LocationPickerSheet: View {
                             }
                         }
                         Spacer()
-                        if pending == .city(suggestion.display) {
+                        if chooser.pending == .city(suggestion.display) {
                             ProgressView().controlSize(.small)
                         }
                     }
                 }
-                .disabled(pending != nil)
+                .disabled(chooser.isBusy)
             }
         }
     }
@@ -229,53 +224,16 @@ struct LocationPickerSheet: View {
 
     // MARK: - Resolution
 
+    /// Both routes live in `PlaceChooser`; what's left here is what the *sheet*
+    /// does about a success — put the search field away, since the list behind
+    /// it is now showing the place that was just chosen.
     private func useDeviceLocation() async {
-        failure = nil
-        pending = .deviceFix
-        defer { pending = nil }
-        guard let coordinate = await location.resolveOnce() else {
-            failure = location.isDenied
-                ? "Location is off for Open Market. Turn it on in Settings."
-                : "Couldn't get a location fix."
-            return
-        }
-        await apply(coordinate, origin: .deviceFix)
+        await chooser.useDeviceLocation(via: location)
     }
 
     private func use(_ suggestion: AppleMapsCitySearch.Suggestion) async {
-        failure = nil
-        pending = .city(suggestion.display)
-        defer { pending = nil }
-        guard let coordinate = await cities.coordinate(for: suggestion) else {
-            failure = "Couldn't place \(suggestion.title) on the map."
-            return
-        }
-        await apply(coordinate, origin: .searchedCity)
-    }
-
-    private func apply(_ coordinate: CLLocationCoordinate2D, origin: ResolvedPlace.Origin) async {
-        let resolver = MarketplacePlaceResolver()
-        switch await resolver.resolve(coordinate, origin: origin) {
-        case .success(let place):
-            prefs.setResolvedPlace(place)
-            query = ""
-            cities.clear()
-        case .failure(let error):
-            // Named rather than generic: each of these is a different thing
-            // going wrong and the distinction is what makes a report useful.
-            failure = switch error {
-            case .noPill: "Facebook's location control wasn't on the page."
-            case .noArrow: "Facebook's location dialog didn't offer the current-location button."
-            case .notAsked: "Facebook didn't ask for a position."
-            case .unresolved: "Facebook didn't recognise that place."
-            case .paced: "Too many requests just now. Try again shortly."
-            case .notConfirmed(let shown):
-                if let shown {
-                    "Facebook set the location but then served \(shown) instead. Not saved."
-                } else {
-                    "Couldn't confirm the location took effect. Not saved."
-                }
-            }
-        }
+        guard await chooser.use(suggestion, from: cities) else { return }
+        query = ""
+        cities.clear()
     }
 }

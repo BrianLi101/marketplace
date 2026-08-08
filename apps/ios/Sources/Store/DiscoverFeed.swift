@@ -22,6 +22,12 @@ import os
 /// being made: relevance over surprise, from signals that never leave the
 /// device.
 ///
+/// **Before there is any history**, the seeds are the interests picked during
+/// onboarding (`Interest`, `OnboardingView`). That is what the required
+/// three-interest step is for: this class is the reason it exists, and without
+/// it a new install's home screen was a hardcoded category list searched in a
+/// hardcoded city.
+///
 /// **Its own engine**, for the reason `ComparableSearch` has one: sharing the
 /// browse tab's would mean the home feed and the user's first search taking
 /// turns navigating one webview. It costs no extra request budget —
@@ -37,9 +43,29 @@ import os
 final class DiscoverFeed: ObservableObject {
     @Published private(set) var listings: [Listing] = []
     @Published private(set) var isLoading = false
-    /// The searches this feed was built from, so the screen can say so. A feed
+    /// What this feed was built from, so the screen can say so. A feed
     /// assembled out of someone's history should admit which parts of it.
-    @Published private(set) var terms: [String] = []
+    @Published private(set) var seeds: [Seed] = []
+
+    /// One search behind the feed, and where it came from.
+    ///
+    /// The origin is carried rather than inferred because it changes what the
+    /// screen can honestly claim: "from your searches for lamp · desk" is a
+    /// statement about the user's own history, and on a new install — where
+    /// there is no history — the same sentence would be a lie about a list they
+    /// picked off a menu thirty seconds ago.
+    struct Seed: Equatable, Identifiable {
+        enum Origin: Equatable { case search, interest }
+
+        /// What gets searched.
+        let term: String
+        /// What the screen prints. Differs from `term` for interests, whose
+        /// label is a category and whose term is what a listing might say.
+        let label: String
+        let origin: Origin
+
+        var id: String { "\(origin)-\(term)" }
+    }
 
     /// How many searches one fill runs. Three is a judgement, not a
     /// measurement: enough for the mix to feel like more than one topic,
@@ -80,8 +106,8 @@ final class DiscoverFeed: ObservableObject {
             hasLoaded = true
         }
 
-        let seeds = Self.seeds(recent: prefs.recentSearches)
-        terms = seeds
+        let seeds = Self.seeds(recent: prefs.recentSearches, interests: prefs.chosenInterests)
+        self.seeds = seeds
 
         // Published after each search rather than at the end, so the screen
         // fills as it goes instead of showing a skeleton for three sequential
@@ -93,30 +119,64 @@ final class DiscoverFeed: ObservableObject {
         // them, so a pull-to-refresh never blanks the screen it is refreshing.
         var buckets: [[Listing]] = []
         var seen = Set<String>()
-        for term in seeds {
-            buckets.append(await batch(for: term, citySlug: citySlug, excluding: &seen))
+        for seed in seeds {
+            buckets.append(await batch(for: seed.term, citySlug: citySlug, excluding: &seen))
             listings = Self.interleave(buckets)
         }
         Logger.discover.info("\(self.listings.count, privacy: .public) cards from \(seeds.count, privacy: .public) searches")
     }
 
-    /// What to search for: the user's own recent terms, newest first.
+    /// Drops the "already filled" flag without touching what's on screen.
     ///
-    /// The fallback matters more than it looks — on a new install there is no
-    /// history at all, and this is the screen that install lands on. The
-    /// suggested categories are the same list the search field offers, shuffled
-    /// so that two launches of a fresh app don't produce the same three.
-    static func seeds(recent: [String]) -> [String] {
-        var out: [String] = []
-        func add(_ candidate: String) {
-            let term = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+    /// For a change that makes the current feed answer the wrong question —
+    /// editing interests in Settings, and nothing else so far. The cards stay
+    /// up until the next fill replaces them, because blanking a screen the
+    /// moment a preference changes is a worse answer than a stale one.
+    func markStale() { hasLoaded = false }
+
+    /// What to search for: the user's own recent terms first, topped up from
+    /// the interests they chose during onboarding.
+    ///
+    /// That order is the whole design. A search is the strongest statement of
+    /// intent anyone makes in this app and it is about *now*; an interest is a
+    /// standing statement made once, and its job is to answer the question "what
+    /// should the first screen be" for someone who has not searched yet. So
+    /// interests fill the gap and recede as the history grows — a user with
+    /// three recent searches never sees an interest-seeded row again until they
+    /// clear their history.
+    ///
+    /// Interests are shuffled because there are usually more than three of them
+    /// and the array is in the order they were tapped: taking the first three
+    /// every launch would make the last-picked interests decorative.
+    static func seeds(recent: [String], interests: [Interest]) -> [Seed] {
+        var out: [Seed] = []
+        func add(_ seed: Seed) {
+            let term = seed.term.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !term.isEmpty, out.count < searchCount,
-                  !out.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { return }
-            out.append(term)
+                  !out.contains(where: { $0.term.caseInsensitiveCompare(term) == .orderedSame }) else { return }
+            out.append(seed)
         }
-        recent.forEach(add)
-        Preferences.suggestedCategories.shuffled().forEach(add)
+        recent.forEach { add(Seed(term: $0, label: $0, origin: .search)) }
+        interests.shuffled().forEach {
+            add(Seed(term: $0.term, label: $0.label, origin: .interest))
+        }
         return out
+    }
+
+    /// What the section header says it was built from — or nil when there is
+    /// nothing to describe yet.
+    ///
+    /// Load-bearing, not decoration: a shuffled feed with no stated basis is
+    /// indistinguishable from a random one, which is exactly the complaint that
+    /// got the previous version of this screen deleted.
+    var caption: String? {
+        guard !seeds.isEmpty else { return nil }
+        let names = seeds.map(\.label).joined(separator: " · ")
+        switch (seeds.contains { $0.origin == .search }, seeds.contains { $0.origin == .interest }) {
+        case (true, false): return "From your searches for \(names)"
+        case (false, true): return "From your interests: \(names)"
+        default: return "From your searches and interests: \(names)"
+        }
     }
 
     /// One search's contribution: a random sample of its results, minus

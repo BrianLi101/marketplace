@@ -11,7 +11,8 @@ final class Preferences: ObservableObject {
         static let recentSearches = "recentSearches"
         static let recordSearchHistory = "recordSearchHistory"
         static let radiusKM = "radiusKM"
-        static let hasSeenFirstRun = "hasSeenFirstRun"
+        static let interests = "interests"
+        static let hasCompletedOnboarding = "hasCompletedOnboarding"
         static let locationName = "locationName"
         static let locationSlug = "locationSlug"
         static let lastQueryKind = "lastQueryKind"
@@ -41,7 +42,22 @@ final class Preferences: ObservableObject {
     /// explicitly, which is the honest reading of "stop recording".
     @Published var recordSearchHistory: Bool { didSet { defaults.set(recordSearchHistory, forKey: Key.recordSearchHistory) } }
     @Published var radiusKM: Int { didSet { defaults.set(radiusKM, forKey: Key.radiusKM) } }
-    @Published var hasSeenFirstRun: Bool { didSet { defaults.set(hasSeenFirstRun, forKey: Key.hasSeenFirstRun) } }
+
+    /// The categories the user said they shop for, as `Interest` ids.
+    ///
+    /// Long-term storage on purpose: this is a standing statement about the
+    /// person, not about a session, and it is the only thing the home screen
+    /// has to go on before they've searched for anything. Order is the order
+    /// they were picked in — Discover reads it as a preference ranking when it
+    /// has to take a subset.
+    @Published var interests: [String] { didSet { defaults.set(interests, forKey: Key.interests) } }
+
+    /// Set by the last step of onboarding, and never cleared.
+    ///
+    /// A stored flag rather than a purely derived one because the derived
+    /// condition goes true the instant the third interest is tapped, which
+    /// would tear the screen away before the user could press Continue.
+    @Published var hasCompletedOnboarding: Bool { didSet { defaults.set(hasCompletedOnboarding, forKey: Key.hasCompletedOnboarding) } }
     /// Human-readable place name for the UI ("San Francisco, CA").
     @Published var locationName: String? { didSet { defaults.set(locationName, forKey: Key.locationName) } }
     /// Facebook's city slug used in the search path ("sanfrancisco").
@@ -127,7 +143,30 @@ final class Preferences: ObservableObject {
         return SearchQuery.milesToKilometres(miles)
     }
 
-    static let suggestedCategories = ["Furniture", "Electronics", "Free Stuff", "Bikes", "Tools"]
+    /// The chosen interests, as things with labels and search terms.
+    ///
+    /// Never empty in a shipped app — onboarding won't let go of the screen
+    /// until three are picked — but it falls back rather than trapping, because
+    /// an empty home screen is a worse answer than a generic one if this ever
+    /// does get reached with nothing stored.
+    var chosenInterests: [Interest] {
+        let resolved = Interest.resolve(interests)
+        return resolved.isEmpty ? Interest.defaults : resolved
+    }
+
+    /// Whether the app's two requirements are met: somewhere to search, and
+    /// enough interests to build a first screen out of.
+    ///
+    /// Both are re-checked on every launch rather than trusted to the flag
+    /// alone, so an install that somehow ends up without a place — or with its
+    /// interests emptied — is asked again instead of landing on a home screen
+    /// that has nothing to show. `hasCompletedOnboarding` is what keeps the
+    /// flow on screen while it is being filled in.
+    var needsOnboarding: Bool {
+        !hasCompletedOnboarding
+            || resolvedPlace == nil
+            || Interest.resolve(interests).count < Interest.minimum
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -147,7 +186,15 @@ final class Preferences: ObservableObject {
         // renders whatever is set (`LocationPickerSheet`), so nothing depends
         // on the value being a rung any more.
         radiusKM = defaults.object(forKey: Key.radiusKM) as? Int ?? Self.defaultRadiusKM
-        hasSeenFirstRun = defaults.bool(forKey: Key.hasSeenFirstRun)
+        interests = defaults.stringArray(forKey: Key.interests) ?? []
+        // Deliberately a new key rather than a rename of `hasSeenFirstRun`.
+        //
+        // The old first run was three explanatory cards and asked for nothing,
+        // so an install that has "seen" it has still never chosen a place or an
+        // interest — exactly the two things the home screen now needs. Reading
+        // the old flag would let those installs through to a Discover with
+        // nothing behind it. They get asked once, like everyone else.
+        hasCompletedOnboarding = defaults.bool(forKey: Key.hasCompletedOnboarding)
         locationName = defaults.string(forKey: Key.locationName)
         // Kept as-is, with no validation against a curated list any more.
         //

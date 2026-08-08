@@ -36,6 +36,19 @@ struct SettingsView: View {
                 // results screen couldn't be represented, and opening Settings
                 // would show some other value as selected.
 
+                // Picked once during onboarding, and editable ever after: they
+                // decide what the home screen shows before there is any search
+                // history, so freezing them at whatever was tapped in the first
+                // thirty seconds would be a strange thing to do with a standing
+                // statement about what someone shops for.
+                Section("Interests") {
+                    NavigationLink {
+                        InterestSettingsView()
+                    } label: {
+                        LabeledContent("Interests", value: interestSummary)
+                    }
+                }
+
                 Section("History") {
                     Toggle("Include searches in history", isOn: $prefs.recordSearchHistory)
                     Button("Clear search history") { prefs.recentSearches = [] }
@@ -74,5 +87,14 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// The first couple by name, then a count. Naming all eighteen would wrap
+    /// to three lines in a row that is meant to be glanced at.
+    private var interestSummary: String {
+        let chosen = prefs.chosenInterests
+        let named = chosen.prefix(2).map(\.label).joined(separator: ", ")
+        let rest = chosen.count - min(2, chosen.count)
+        return rest > 0 ? "\(named) +\(rest)" : named
     }
 }

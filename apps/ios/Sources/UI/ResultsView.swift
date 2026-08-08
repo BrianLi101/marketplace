@@ -169,6 +169,22 @@ struct ResultsView: View {
             // is worse than showing them a feed that is an hour old. Relaunch
             // and pull-to-refresh are the two ways to get a new one.
             .task { await loadDiscover() }
+            // Onboarding just handed over a place and three interests, which is
+            // everything the feed was waiting for. `.task` above has already
+            // run and returned empty-handed by then, so this is the fill for
+            // every first launch.
+            .onChange(of: prefs.needsOnboarding) { _, needed in
+                if !needed { Task { await loadDiscover() } }
+            }
+            // Editing interests changes what Discover is *for*, unlike the
+            // things that deliberately don't invalidate it. It doesn't refill
+            // on the spot — the Settings sheet is over the top of the feed, and
+            // there'd be nothing to watch — so it's marked stale here and
+            // rebuilt when the sheet closes.
+            .onChange(of: prefs.interests) { discover.markStale() }
+            .onChange(of: showSettings) { _, shown in
+                if !shown { Task { await loadDiscover() } }
+            }
             .refreshable {
                 // The gesture means "get me a fresh version of this screen",
                 // and which screen that is depends on whether a search is up.
@@ -337,18 +353,20 @@ struct ResultsView: View {
     /// individual listings, and this one is bounded by what those searches
     /// returned.
     ///
-    /// The terms are named under the heading, and that is not decoration. A
+    /// The seeds are named under the heading, and that is not decoration. A
     /// shuffled feed with no stated basis is indistinguishable from a random
     /// one — which is exactly the complaint that got Facebook's own feed
     /// removed from this screen. Saying "from lamp · couch · desk" is what makes
-    /// the mix legible as a consequence of something the user did.
+    /// the mix legible as a consequence of something the user did, and on a new
+    /// install "from your interests" says the same about something they picked
+    /// during onboarding rather than implying a history they don't have.
     @ViewBuilder
     private func discoverSection(_ w: Winnowed) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 sectionTitle("Discover")
-                if !discover.terms.isEmpty {
-                    Text("From your searches for \(discover.terms.joined(separator: " · "))")
+                if let caption = discover.caption {
+                    Text(caption)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 12)
@@ -574,7 +592,14 @@ struct ResultsView: View {
 
     /// The same place every search uses, so Discover and a search from the home
     /// screen are looking at the same city.
+    ///
+    /// Held back while onboarding is up. This view exists behind that cover
+    /// from launch, so without the guard the feed would spend three page loads
+    /// on a fallback city and a default category list — and then be marked
+    /// filled, so the place and interests the user was in the middle of
+    /// choosing wouldn't reach it until the next launch.
     private func loadDiscover(force: Bool = false) async {
+        guard !prefs.needsOnboarding else { return }
         await discover.loadIfNeeded(citySlug: prefs.locationSlug ?? "sanfrancisco", force: force)
     }
 
@@ -631,10 +656,17 @@ private struct SearchSuggestions: View {
                 }
             }
         }
-        Section(prefs.recentSearches.isEmpty ? "Try" : "Categories") {
-            ForEach(Preferences.suggestedCategories, id: \.self) { name in
-                Label(name, systemImage: "square.grid.2x2")
-                    .searchCompletion(name)
+        // The user's own interests rather than a fixed list of five.
+        //
+        // Same list Discover seeds from, which is the point: what the home
+        // screen offers and what the search field offers should be the same
+        // answer to the same question. The completion is the interest's search
+        // *term*, not its label — running a search for "Home & garden" would
+        // find nothing, because Marketplace matches listing text.
+        Section(prefs.recentSearches.isEmpty ? "Try" : "Your interests") {
+            ForEach(prefs.chosenInterests) { interest in
+                Label(interest.label, systemImage: "square.grid.2x2")
+                    .searchCompletion(interest.term)
             }
         }
     }

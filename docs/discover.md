@@ -25,7 +25,7 @@ Up to three of the user's own recent searches, re-run and mixed.
 | Step | Rule | Why |
 |---|---|---|
 | Seed | `recentSearches`, newest first, up to 3 | The one strong statement of interest anyone makes in this app |
-| Seed fallback | `Preferences.suggestedCategories`, shuffled | A new install has no history and this is the screen it lands on |
+| Seed fallback | The interests picked at onboarding, shuffled, topping up to 3 | A new install has no history and this is the screen it lands on. Shuffled because there are usually more than three and the array is in pick order — taking the first three every launch would make the rest decorative |
 | Sample | shuffle the results, *then* take 10 | Taking the top 10 would make Discover the first rows of three searches — which the user could have got by running them |
 | Mix | round-robin across the three buckets | The mix has to be visible in the first row, not three blocks stacked up |
 | Filters | the user's own — delivery, price, condition, sort | A Discover that ignored them would show results their own search wouldn't |
@@ -42,10 +42,28 @@ lamp · couch · desk"). This is load-bearing, not decoration: a shuffled feed w
 no stated basis is indistinguishable from a random one, which was the complaint
 that got the previous version deleted.
 
+Each seed carries where it came from, and the sentence changes with it — "From
+your interests: Furniture · Bikes · Plants" on a fresh install, "From your
+searches and interests" while history is filling up. Printing the interest
+labels under the searches wording would claim a history the user doesn't have
+yet, on a screen whose entire job is to be legible as a consequence of something
+they did.
+
+Note the labels are not the terms. An interest searches for the searchable half
+of its category — "Home & garden" runs `home decor`, "Jewellery" runs `jewelry`
+— because Marketplace search is a fuzzy match over listing text, not a category
+filter. The chip is what the user chose; the term is what finds anything.
+
 ## 2. Cache lifetime
 
-Two things rebuild it: **relaunching the app, and pulling to refresh.** Nothing
-else.
+Three things rebuild it: **relaunching the app, pulling to refresh, and editing
+interests in Settings.** Nothing else.
+
+The third is new with interests and is the exception that proves the rule below:
+it doesn't change what the feed *contains*, it changes what the feed is *for*.
+It doesn't refill on the spot either — the Settings sheet is over the top of the
+feed, so there'd be nothing to watch — it marks the feed stale and rebuilds when
+the sheet closes.
 
 Not a new search — recent searches are the seed, so every search would otherwise
 throw away the feed the user is about to return to, and they'd come back from a
@@ -86,8 +104,11 @@ It was also markup-only: the embedded payload is effectively absent on that path
 photo — `embedded-payload.md` §8). That was the *smaller* of its two problems.
 
 **What the current design gives up is novelty.** Discover cannot show you
-something in a category you have never asked about. That is the trade: relevance
-over surprise, from signals that never leave the device.
+something in a category you have never asked about *or picked at onboarding*.
+That is the trade: relevance over surprise, from signals that never leave the
+device. Interests widen it slightly — eighteen categories is more range than
+most people's recent searches — but the ceiling is still the user's own stated
+taste, by construction.
 
 ## 4. Known issues
 
@@ -105,6 +126,10 @@ Two candidate fixes, neither implemented: don't record a term that returned zero
 results, or have Discover skip a seed that comes back empty and fall through to
 the next one. The second is better — it also handles a term that worked once and
 stopped, like a sold-out model name.
+
+Interests make this worse rather than better, because there is now something
+good to fall through *to*: a junk term costs a third of the feed that an
+interest would otherwise have filled.
 
 ### 4.2 Cold start is three sequential page loads
 
@@ -149,6 +174,29 @@ Cards come from search results, so the first ~15 of each search carry the
 embedded payload and anything past that is markup only. Nothing downstream should
 assume an exact `creation_time`, `delivery_types` or sold state on a Discover
 card. Opening one enriches it from its item page.
+
+### 4.7 Three searches retire the interests completely
+
+Seeds are recent-first and there are three of them, so the moment someone has
+three searches in history their interests stop contributing anything at all —
+including a one-off search for a gift, or a term typed once a month ago. The
+standing preference loses to the incidental one, permanently, and the only route
+back is clearing search history.
+
+The fix is probably a mix rather than a precedence: two searches and one
+interest, say, so a chosen category keeps a seat. Not implemented, because it
+wants a real feed to judge — the alternative failure is a home screen that keeps
+showing furniture to someone who has moved on to bike parts.
+
+### 4.8 An interest's search term is a guess
+
+Each interest searches for the searchable half of its category, and some of
+those choices are more obviously right than others. "Furniture" and "Plants"
+match how people title listings; `home decor` for "Home & garden" and
+`sports equipment` for "Sports gear" are editorial guesses at what a listing in
+that category actually says. None of them have been measured against result
+counts, and a term that under-returns costs a third of a fresh install's feed —
+the same failure as 4.1, with nobody to blame it on.
 
 ## 5. If Discover ever draws on external or older sources
 
@@ -200,7 +248,24 @@ So any longer-lived Discover has to:
 Both risks point the same way: the further Discover moves from "fetched just
 now", the more it needs to state its own age rather than imply freshness.
 
-## 6. Search history is now a home-screen input
+## 6. The two inputs to this screen, and what that changed
+
+### 6.1 Interests
+
+Picked during onboarding, required, three minimum, stored as `Interest` ids in
+`Preferences.interests` (`docs/onboarding.md`). They exist for this file and
+nothing else: they are what Discover is made of before there is any history.
+
+Ids rather than labels or terms, so a category can be re-worded or its search
+term improved without emptying anybody's saved choices — and `Interest.resolve`
+drops ids this build no longer knows, so a retired category can't sit in the
+count as a ghost.
+
+They are also what the search field offers under "Try", which is the same answer
+to the same question: the completion inserted is the *term*, not the label,
+because searching for "Home & garden" finds nothing.
+
+### 6.2 Search history
 
 Recording a search used to be a private matter between the search field and its
 own suggestions. Seeding Discover from it changed the stakes: anything searched

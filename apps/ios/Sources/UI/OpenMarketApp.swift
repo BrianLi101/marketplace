@@ -84,11 +84,16 @@ struct RootView: View {
             HiddenWebViewHost(webView: discover.webView)
                 .offset(x: 3000)
         }
+        // Onboarding asks for two things the app cannot work without — a place
+        // to search, and enough interests to build a first home screen from —
+        // so it is a gate rather than a greeting. The binding is read-only for
+        // that reason: nothing dismisses this except `done`, which stores the
+        // answers and takes `needsOnboarding` false.
         .fullScreenCover(isPresented: .init(
-            get: { !prefs.hasSeenFirstRun },
-            set: { if !$0 { prefs.hasSeenFirstRun = true } }
+            get: { prefs.needsOnboarding },
+            set: { _ in }
         )) {
-            FirstRunView { prefs.hasSeenFirstRun = true }
+            OnboardingView { prefs.hasCompletedOnboarding = true }
         }
     }
 }
